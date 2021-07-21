@@ -26,9 +26,12 @@ apiServer:
     fail-no-swap: "true"
 controllerManager:
   extraArgs:
+    allocate-node-cidrs: "true"
     kube-api-burst: "32"
+    leader-elect: "false"
 scheduler:
   extraArgs:
+    leader-elect: "false"
     scheduler-name: "mini-scheduler"
 certificatesDir: /var/lib/minikube/certs
 clusterName: mk
@@ -40,20 +43,18 @@ etcd:
     dataDir: /var/lib/minikube/etcd
     extraArgs:
       listen-metrics-urls: http://127.0.0.1:2381,http://1.1.1.1:2381
-controllerManager:
-  extraArgs:
-    "leader-elect": "false"
-scheduler:
-  extraArgs:
-    "leader-elect": "false"
 kubernetesVersion: v1.16.0
 networking:
   dnsDomain: cluster.local
-  podSubnet: ""
+  podSubnet: "10.244.0.0/16"
   serviceSubnet: 10.96.0.0/12
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
+authentication:
+  x509:
+    clientCAFile: /var/lib/minikube/certs/ca.crt
+cgroupDriver: systemd
 clusterDomain: "cluster.local"
 # disable disk resource management by default
 imageGCHighThresholdPercent: 100
@@ -62,9 +63,12 @@ evictionHard:
   nodefs.inodesFree: "0%"
   imagefs.available: "0%"
 failSwapOn: false
+staticPodPath: /etc/kubernetes/manifests
 ---
 apiVersion: kubeproxy.config.k8s.io/v1alpha1
 kind: KubeProxyConfiguration
-clusterCIDR: ""
-metricsBindAddress: 1.1.1.1:10249
+clusterCIDR: "10.244.0.0/16"
+metricsBindAddress: 0.0.0.0:10249
+conntrack:
+  maxPerCore: 0
 mode: "iptables"

@@ -4,13 +4,14 @@
 #
 ################################################################################
 
-CRIO_BIN_VERSION = v1.18.1
-CRIO_BIN_COMMIT = 5cbf694c34f8d1af19eb873e39057663a4830635
+CRIO_BIN_VERSION = v1.20.2
+CRIO_BIN_COMMIT = d5a999ad0a35d895ded554e1e18c142075501a98
 CRIO_BIN_SITE = https://github.com/cri-o/cri-o/archive
 CRIO_BIN_SOURCE = $(CRIO_BIN_VERSION).tar.gz
 CRIO_BIN_DEPENDENCIES = host-go libgpgme
 CRIO_BIN_GOPATH = $(@D)/_output
 CRIO_BIN_ENV = \
+	$(GO_TARGET_ENV) \
 	CGO_ENABLED=1 \
 	GO111MODULE=off \
 	GOPATH="$(CRIO_BIN_GOPATH)" \

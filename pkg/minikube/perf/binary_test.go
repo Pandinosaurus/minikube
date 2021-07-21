@@ -31,7 +31,7 @@ func TestBinaryName(t *testing.T) {
 			binary:   Binary{path: "foo", pr: 0},
 		},
 		{
-			expected: "Minikube (PR 1)",
+			expected: "minikube (PR 1)",
 			binary:   Binary{path: "bar", pr: 1},
 		},
 	}
@@ -52,10 +52,6 @@ func TestNewBinary(t *testing.T) {
 		input, prNum string
 		errExpected  bool
 	}{
-		{
-			input: prPrefix + "42",
-			prNum: "42",
-		},
 		{
 			input: "42",
 			prNum: "42",

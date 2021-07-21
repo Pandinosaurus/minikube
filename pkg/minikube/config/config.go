@@ -32,22 +32,24 @@ import (
 const (
 	// WantUpdateNotification is the key for WantUpdateNotification
 	WantUpdateNotification = "WantUpdateNotification"
-	// ReminderWaitPeriodInHours is the key for WantUpdateNotification
+	// WantBetaUpdateNotification is the key for WantBetaUpdateNotification
+	WantBetaUpdateNotification = "WantBetaUpdateNotification"
+	// ReminderWaitPeriodInHours is the key for ReminderWaitPeriodInHours
 	ReminderWaitPeriodInHours = "ReminderWaitPeriodInHours"
-	// WantReportError is the key for WantReportError
-	WantReportError = "WantReportError"
-	// WantReportErrorPrompt is the key for WantReportErrorPrompt
-	WantReportErrorPrompt = "WantReportErrorPrompt"
-	// WantKubectlDownloadMsg is the key for WantKubectlDownloadMsg
-	WantKubectlDownloadMsg = "WantKubectlDownloadMsg"
 	// WantNoneDriverWarning is the key for WantNoneDriverWarning
 	WantNoneDriverWarning = "WantNoneDriverWarning"
 	// ProfileName represents the key for the global profile parameter
 	ProfileName = "profile"
-	// ShowDriverDeprecationNotification is the key for ShowDriverDeprecationNotification
-	ShowDriverDeprecationNotification = "ShowDriverDeprecationNotification"
-	// ShowBootstrapperDeprecationNotification is the key for ShowBootstrapperDeprecationNotification
-	ShowBootstrapperDeprecationNotification = "ShowBootstrapperDeprecationNotification"
+	// UserFlag is the key for the global user flag (ex. --user=user1)
+	UserFlag = "user"
+	// AddonImages stores custom addon images config
+	AddonImages = "addon-images"
+	// AddonRegistries stores custom addon images config
+	AddonRegistries = "addon-registries"
+	// AddonListFlag represents the key for addons parameter
+	AddonListFlag = "addons"
+	// EmbedCerts represents the config for embedding certificates in kubeconfig
+	EmbedCerts = "EmbedCerts"
 )
 
 var (
@@ -59,8 +61,6 @@ var (
 	DockerOpt []string
 	// ExtraOptions contains extra options (if any)
 	ExtraOptions ExtraOptionSlice
-	// AddonList contains the list of addons
-	AddonList []string
 )
 
 // ErrNotExist is the error returned when a config does not exist
@@ -75,6 +75,24 @@ func (e *ErrNotExist) Error() string {
 // IsNotExist returns whether the error means a nonexistent configuration
 func IsNotExist(err error) bool {
 	if _, ok := err.(*ErrNotExist); ok {
+		return true
+	}
+	return false
+}
+
+// ErrPermissionDenied is the error returned when the config cannot be read
+// due to insufficient permissions
+type ErrPermissionDenied struct {
+	s string
+}
+
+func (e *ErrPermissionDenied) Error() string {
+	return e.s
+}
+
+// IsPermissionDenied returns whether the error is a ErrPermissionDenied instance
+func IsPermissionDenied(err error) bool {
+	if _, ok := err.(*ErrPermissionDenied); ok {
 		return true
 	}
 	return false
@@ -150,8 +168,8 @@ func encode(w io.Writer, m MinikubeConfig) error {
 }
 
 // Load loads the Kubernetes and machine config for the current machine
-func Load(profile string) (*ClusterConfig, error) {
-	return DefaultLoader.LoadConfigFromFile(profile)
+func Load(profile string, miniHome ...string) (*ClusterConfig, error) {
+	return DefaultLoader.LoadConfigFromFile(profile, miniHome...)
 }
 
 // Write writes the Kubernetes and machine config for the current machine
@@ -184,6 +202,9 @@ func (c *simpleConfigLoader) LoadConfigFromFile(profileName string, miniHome ...
 
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
+		if os.IsPermission(err) {
+			return nil, &ErrPermissionDenied{err.Error()}
+		}
 		return nil, errors.Wrap(err, "read")
 	}
 
@@ -200,18 +221,6 @@ func (c *simpleConfigLoader) WriteConfigToFile(profileName string, cc *ClusterCo
 		return err
 	}
 	return ioutil.WriteFile(path, contents, 0644)
-}
-
-// MultiNodeCNIConfig add default CNI config needed for multinode clusters and saves off the config
-func MultiNodeCNIConfig(cc *ClusterConfig) error {
-	if cc.KubernetesConfig.ExtraOptions.Get("pod-network-cidr", "kubeadm") == "" {
-		cc.KubernetesConfig.NetworkPlugin = "cni"
-		if err := cc.KubernetesConfig.ExtraOptions.Set(fmt.Sprintf("kubeadm.pod-network-cidr=%s", DefaultPodCIDR)); err != nil {
-			return err
-		}
-		return SaveProfile(cc.Name, cc)
-	}
-	return nil
 }
 
 // MultiNode returns true if the cluster has multiple nodes or if the request is asking for multinode

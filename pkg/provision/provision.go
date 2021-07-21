@@ -34,8 +34,9 @@ import (
 	"github.com/docker/machine/libmachine/mcnutils"
 	"github.com/docker/machine/libmachine/provision"
 	"github.com/docker/machine/libmachine/swarm"
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
+
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/command"
 	"k8s.io/minikube/pkg/minikube/config"
@@ -79,10 +80,10 @@ func NewSystemdProvisioner(osReleaseID string, d drivers.Driver) provision.Syste
 }
 
 func configureAuth(p miniProvisioner) error {
-	glog.Infof("configureAuth start")
+	klog.Infof("configureAuth start")
 	start := time.Now()
 	defer func() {
-		glog.Infof("duration metric: configureAuth took %s", time.Since(start))
+		klog.Infof("duration metric: configureAuth took %s", time.Since(start))
 	}()
 
 	driver := p.GetDriver()
@@ -96,13 +97,18 @@ func configureAuth(p miniProvisioner) error {
 		return errors.Wrap(err, "error getting ip during provisioning")
 	}
 
+	hostIP, err := driver.GetSSHHostname()
+	if err != nil {
+		return errors.Wrap(err, "error getting ssh hostname during provisioning")
+	}
+
 	if err := copyHostCerts(authOptions); err != nil {
 		return err
 	}
 
 	// The Host IP is always added to the certificate's SANs list
-	hosts := append(authOptions.ServerCertSANs, ip, "localhost", "127.0.0.1")
-	glog.Infof("generating server cert: %s ca-key=%s private-key=%s org=%s san=%s",
+	hosts := append(authOptions.ServerCertSANs, ip, hostIP, "localhost", "127.0.0.1", "minikube", machineName)
+	klog.Infof("generating server cert: %s ca-key=%s private-key=%s org=%s san=%s",
 		authOptions.ServerCertPath,
 		authOptions.CaCertPath,
 		authOptions.CaPrivateKeyPath,
@@ -128,11 +134,11 @@ func configureAuth(p miniProvisioner) error {
 }
 
 func copyHostCerts(authOptions auth.Options) error {
-	glog.Infof("copyHostCerts")
+	klog.Infof("copyHostCerts")
 
 	err := os.MkdirAll(authOptions.StorePath, 0700)
 	if err != nil {
-		glog.Errorf("mkdir failed: %v", err)
+		klog.Errorf("mkdir failed: %v", err)
 	}
 
 	hostCerts := map[string]string{
@@ -141,12 +147,18 @@ func copyHostCerts(authOptions auth.Options) error {
 		authOptions.ClientKeyPath:  path.Join(authOptions.StorePath, "key.pem"),
 	}
 
-	execRunner := command.NewExecRunner()
+	execRunner := command.NewExecRunner(false)
 	for src, dst := range hostCerts {
 		f, err := assets.NewFileAsset(src, path.Dir(dst), filepath.Base(dst), "0777")
 		if err != nil {
 			return errors.Wrapf(err, "open cert file: %s", src)
 		}
+		defer func() {
+			if err := f.Close(); err != nil {
+				klog.Warningf("error closing the file %s: %v", f.GetSourcePath(), err)
+			}
+		}()
+
 		if err := execRunner.Copy(f); err != nil {
 			return errors.Wrapf(err, "transferring file: %+v", f)
 		}
@@ -156,7 +168,7 @@ func copyHostCerts(authOptions auth.Options) error {
 }
 
 func copyRemoteCerts(authOptions auth.Options, driver drivers.Driver) error {
-	glog.Infof("copyRemoteCerts")
+	klog.Infof("copyRemoteCerts")
 
 	remoteCerts := map[string]string{
 		authOptions.CaCertPath:     authOptions.CaCertRemotePath,
@@ -181,6 +193,12 @@ func copyRemoteCerts(authOptions auth.Options, driver drivers.Driver) error {
 		if err != nil {
 			return errors.Wrapf(err, "error copying %s to %s", src, dst)
 		}
+		defer func() {
+			if err := f.Close(); err != nil {
+				klog.Warningf("error closing the file %s: %v", f.GetSourcePath(), err)
+			}
+		}()
+
 		if err := sshRunner.Copy(f); err != nil {
 			return errors.Wrapf(err, "transferring file to machine %v", f)
 		}
@@ -287,7 +305,7 @@ func concatStrings(src []string, prefix string, postfix string) []string {
 
 // updateUnit efficiently updates a systemd unit file
 func updateUnit(p provision.SSHCommander, name string, content string, dst string) error {
-	glog.Infof("Updating %s unit: %s ...", name, dst)
+	klog.Infof("Updating %s unit: %s ...", name, dst)
 
 	if _, err := p.SSHCommand(fmt.Sprintf("sudo mkdir -p %s && printf %%s \"%s\" | sudo tee %s.new", path.Dir(dst), content, dst)); err != nil {
 		return err

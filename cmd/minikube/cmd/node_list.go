@@ -20,11 +20,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
-	"k8s.io/minikube/pkg/minikube/driver"
+	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/exit"
 	"k8s.io/minikube/pkg/minikube/mustload"
+	"k8s.io/minikube/pkg/minikube/reason"
 )
 
 var nodeListCmd = &cobra.Command{
@@ -33,20 +34,20 @@ var nodeListCmd = &cobra.Command{
 	Long:  "List existing minikube nodes.",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 0 {
-			exit.UsageT("Usage: minikube node list")
+			exit.Message(reason.Usage, "Usage: minikube node list")
 		}
 
 		cname := ClusterFlagValue()
 		_, cc := mustload.Partial(cname)
 
 		if len(cc.Nodes) < 1 {
-			glog.Warningf("Did not found any minikube node.")
+			klog.Warningf("Did not found any minikube node.")
 		} else {
-			glog.Infof("%v", cc.Nodes)
+			klog.Infof("%v", cc.Nodes)
 		}
 
 		for _, n := range cc.Nodes {
-			machineName := driver.MachineName(*cc, n)
+			machineName := config.MachineName(*cc, n)
 			fmt.Printf("%s\t%s\n", machineName, n.IP)
 		}
 		os.Exit(0)

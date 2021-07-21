@@ -22,9 +22,11 @@ import (
 	"path"
 	"runtime"
 
-	"github.com/blang/semver"
-	"github.com/golang/glog"
+	"k8s.io/minikube/pkg/minikube/detect"
+
+	"github.com/blang/semver/v4"
 	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/localpath"
 )
 
@@ -46,14 +48,23 @@ func binaryWithChecksumURL(binaryName, version, osName, archName string) (string
 func Binary(binary, version, osName, archName string) (string, error) {
 	targetDir := localpath.MakeMiniPath("cache", osName, version)
 	targetFilepath := path.Join(targetDir, binary)
+	targetLock := targetFilepath + ".lock"
 
 	url, err := binaryWithChecksumURL(binary, version, osName, archName)
 	if err != nil {
 		return "", err
 	}
 
-	if _, err := os.Stat(targetFilepath); err == nil {
-		glog.Infof("Not caching binary, using %s", url)
+	releaser, err := lockDownload(targetLock)
+	if releaser != nil {
+		defer releaser.Release()
+	}
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := checkCache(targetFilepath); err == nil {
+		klog.Infof("Not caching binary, using %s", url)
 		return targetFilepath, nil
 	}
 
@@ -61,7 +72,7 @@ func Binary(binary, version, osName, archName string) (string, error) {
 		return "", errors.Wrapf(err, "download failed: %s", url)
 	}
 
-	if osName == runtime.GOOS && archName == runtime.GOARCH {
+	if osName == runtime.GOOS && archName == detect.EffectiveArch() {
 		if err = os.Chmod(targetFilepath, 0755); err != nil {
 			return "", errors.Wrapf(err, "chmod +x %s", targetFilepath)
 		}

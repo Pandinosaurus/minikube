@@ -40,7 +40,7 @@ if ! [[ ${VERSION_BUILD} =~ ^[0-9]+$ ]]; then
   RELEASE_FLAGS="-p"  # Pre-release
 fi
 
-RELEASE_NOTES=$(perl -e "\$p=0; while(<>) { if(/^## Version ${VERSION} -/) { \$p=1 } elsif (/^##/) { \$p=0 }; if (\$p) { print }}" < CHANGELOG.md)
+RELEASE_NOTES=$(perl -e "\$p=0; while(<>) { if(/^## Version ${VERSION} -/) { \$p=1 } elsif (/^## Version/) { \$p=0 }; if (\$p) { print }}" < CHANGELOG.md)
 if [[ "${RELEASE_NOTES}" = "" ]]; then
   RELEASE_NOTES="(missing for ${VERSION})"
 fi
@@ -81,7 +81,7 @@ for path in $(gsutil ls "gs://${ISO_BUCKET}/minikube-v${VERSION}*" || true); do
 done
  
 # Upload all end-user assets other than preload files, as they are release independent
-for file in out/minikube[_-]* out/docker-machine-*; do
+for file in $( find out \( -name "minikube[_-]*" -or -name "docker-machine-*"  \) -and ! -name "*latest*"); do
     n=0
     until [ $n -ge 5 ]
     do

@@ -17,15 +17,21 @@ limitations under the License.
 package sshutil
 
 import (
+	"bufio"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/docker/machine/libmachine/drivers"
 	machinessh "github.com/docker/machine/libmachine/ssh"
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
+	"k8s.io/client-go/util/homedir"
+	"k8s.io/klog/v2"
+
 	"k8s.io/minikube/pkg/util/retry"
 )
 
@@ -36,12 +42,15 @@ func NewSSHClient(d drivers.Driver) (*ssh.Client, error) {
 		return nil, errors.Wrap(err, "Error creating new ssh host from driver")
 
 	}
+	defaultKeyPath := filepath.Join(homedir.HomeDir(), ".ssh", "id_rsa")
 	auth := &machinessh.Auth{}
 	if h.SSHKeyPath != "" {
 		auth.Keys = []string{h.SSHKeyPath}
+	} else {
+		auth.Keys = []string{defaultKeyPath}
 	}
 
-	glog.Infof("new ssh client: %+v", h)
+	klog.Infof("new ssh client: %+v", h)
 
 	config, err := machinessh.NewNativeConfig(h.Username, auth)
 	if err != nil {
@@ -52,7 +61,7 @@ func NewSSHClient(d drivers.Driver) (*ssh.Client, error) {
 	getSSH := func() (err error) {
 		client, err = ssh.Dial("tcp", net.JoinHostPort(h.IP, strconv.Itoa(h.Port)), &config)
 		if err != nil {
-			glog.Warningf("dial failure (will retry): %v", err)
+			klog.Warningf("dial failure (will retry): %v", err)
 		}
 		return err
 	}
@@ -87,4 +96,30 @@ func newSSHHost(d drivers.Driver) (*sshHost, error) {
 		SSHKeyPath: d.GetSSHKeyPath(),
 		Username:   d.GetSSHUsername(),
 	}, nil
+}
+
+// KnownHost checks if this host is in the knownHosts file
+func KnownHost(host string, knownHosts string) bool {
+	fd, err := os.Open(knownHosts)
+	if err != nil {
+		return false
+	}
+	defer fd.Close()
+
+	hashhost := knownhosts.HashHostname(host)
+	scanner := bufio.NewScanner(fd)
+	for scanner.Scan() {
+		_, hosts, _, _, _, err := ssh.ParseKnownHosts(scanner.Bytes())
+		if err != nil {
+			continue
+		}
+
+		for _, h := range hosts {
+			if h == host || h == hashhost {
+				return true
+			}
+		}
+	}
+
+	return false
 }

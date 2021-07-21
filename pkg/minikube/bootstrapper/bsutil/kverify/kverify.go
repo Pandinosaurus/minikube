@@ -35,6 +35,10 @@ const (
 	AppsRunningKey = "apps_running"
 	// NodeReadyKey is the name used in the flags for waiting for the node status to be ready
 	NodeReadyKey = "node_ready"
+	// KubeletKey is the name used in the flags for waiting for the kubelet status to be ready
+	KubeletKey = "kubelet"
+	// ExtraKey is the name used for extra waiting for pods in CorePodsLabels to be Ready
+	ExtraKey = "extra"
 )
 
 //  vars related to the --wait flag
@@ -42,13 +46,13 @@ var (
 	// DefaultComponents is map of the the default components to wait for
 	DefaultComponents = map[string]bool{APIServerWaitKey: true, SystemPodsWaitKey: true}
 	// NoWaitComponents is map of componets to wait for if specified 'none' or 'false'
-	NoComponents = map[string]bool{APIServerWaitKey: false, SystemPodsWaitKey: false, DefaultSAWaitKey: false, AppsRunningKey: false, NodeReadyKey: false}
+	NoComponents = map[string]bool{APIServerWaitKey: false, SystemPodsWaitKey: false, DefaultSAWaitKey: false, AppsRunningKey: false, NodeReadyKey: false, KubeletKey: false, ExtraKey: false}
 	// AllComponents is map for waiting for all components.
-	AllComponents = map[string]bool{APIServerWaitKey: true, SystemPodsWaitKey: true, DefaultSAWaitKey: true, AppsRunningKey: true}
+	AllComponents = map[string]bool{APIServerWaitKey: true, SystemPodsWaitKey: true, DefaultSAWaitKey: true, AppsRunningKey: true, NodeReadyKey: true, KubeletKey: true, ExtraKey: true}
 	// DefaultWaitList is list of all default components to wait for. only names to be used for start flags.
 	DefaultWaitList = []string{APIServerWaitKey, SystemPodsWaitKey}
 	// AllComponentsList list of all valid components keys to wait for. only names to be used used for start flags.
-	AllComponentsList = []string{APIServerWaitKey, SystemPodsWaitKey, DefaultSAWaitKey, AppsRunningKey, NodeReadyKey}
+	AllComponentsList = []string{APIServerWaitKey, SystemPodsWaitKey, DefaultSAWaitKey, AppsRunningKey, NodeReadyKey, KubeletKey}
 	// AppsRunningList running list are valid k8s-app components to wait for them to be running
 	AppsRunningList = []string{
 		"kube-dns", // coredns
@@ -57,6 +61,15 @@ var (
 		"kube-controller-manager",
 		"kube-proxy",
 		"kube-scheduler",
+	}
+	// CorePodsLabels is a list of essential, in addition to any other system-critical, pods for running kurnetes to extra wait for them to be Ready
+	CorePodsLabels = []string{
+		"k8s-app=kube-dns", // coredns
+		"component=etcd",
+		"component=kube-apiserver",
+		"component=kube-controller-manager",
+		"k8s-app=kube-proxy",
+		"component=kube-scheduler",
 	}
 )
 

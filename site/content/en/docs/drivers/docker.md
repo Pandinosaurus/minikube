@@ -19,11 +19,13 @@ The Docker driver allows you to install Kubernetes into an existing Docker insta
 
 ## Known Issues
 
-- Docker driver is not supported on non-amd64 architectures such as arm yet. For non-amd64 archs please use [other drivers]({{< ref "/docs/drivers/_index.md" >}}) 
+- The following Docker runtime security options are currently *unsupported and will not work* with the Docker driver (see [#9607](https://github.com/kubernetes/minikube/issues/9607)):
+  - [userns-remap](https://docs.docker.com/engine/security/userns-remap/)
+  - [rootless](https://docs.docker.com/engine/security/rootless/)
 
 - On macOS, containers might get hung and require a restart of Docker for Desktop. See [docker/for-mac#1835](https://github.com/docker/for-mac/issues/1835)
 
-- The `ingress`, `ingress-dns` and `registry` addons are currently only supported on Linux. See [#7332](https://github.com/kubernetes/minikube/issues/7332) and [#7535](https://github.com/kubernetes/minikube/issues/7535)
+- The `ingress`, and `ingress-dns` addons are currently only supported on Linux. See [#7332](https://github.com/kubernetes/minikube/issues/7332)
 
 - On WSL2 (experimental - see [#5392](https://github.com/kubernetes/minikube/issues/5392)), you may need to run:
 
@@ -32,9 +34,10 @@ The Docker driver allows you to install Kubernetes into an existing Docker insta
 ## Troubleshooting
 
 [comment]: <> (this title is used in the docs links, don't change)
+
 ### Verify Docker container type is Linux
 
-- On Windows, make sure Docker Desktop's container type setting is Linux and not windows. see docker docs on [switching container type](https://docs.docker.com/docker-for-windows/#switch-between-windows-and-linux-containers). 
+- On Windows, make sure Docker Desktop's container type setting is Linux and not windows. see docker docs on [switching container type](https://docs.docker.com/docker-for-windows/#switch-between-windows-and-linux-containers).
 You can verify your Docker container type by running:
    ```shell
    docker info --format '{{.OSType}}'

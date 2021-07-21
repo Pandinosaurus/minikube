@@ -9,7 +9,6 @@ description: >
 
 To install and start a minikube cluster, add the following step to your [github action workflow](https://help.github.com/en/actions/configuring-and-managing-workflows/configuring-a-workflow).
 
-
   ```yaml
       steps:
       - name: start minikube
@@ -37,7 +36,7 @@ Create workflow:
   jobs:
     job1:
       runs-on: ubuntu-latest
-      name: build example and deploy to minikbue
+      name: build example and deploy to minikube
       steps:
       - uses: actions/checkout@v2
       - name: Start minikube

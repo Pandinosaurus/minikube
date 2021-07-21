@@ -24,14 +24,17 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"k8s.io/minikube/cmd/minikube/cmd"
 )
 
+// TestPause tests minikube pause functionality
 func TestPause(t *testing.T) {
 	MaybeParallel(t)
 
 	type validateFunc func(context.Context, *testing.T, string)
 	profile := UniqueProfileName("pause")
-	ctx, cancel := context.WithTimeout(context.Background(), Minutes(30))
+	ctx, cancel := context.WithTimeout(context.Background(), Minutes(15))
 	defer Cleanup(t, profile, cancel)
 
 	// Serial tests
@@ -43,6 +46,7 @@ func TestPause(t *testing.T) {
 			{"Start", validateFreshStart},
 			{"SecondStartNoReconfiguration", validateStartNoReconfigure},
 			{"Pause", validatePause},
+			{"VerifyStatus", validateStatus},
 			{"Unpause", validateUnpause},
 			{"PauseAgain", validatePause},
 			{"DeletePaused", validateDelete},
@@ -50,6 +54,11 @@ func TestPause(t *testing.T) {
 		}
 		for _, tc := range tests {
 			tc := tc
+
+			if ctx.Err() == context.DeadlineExceeded {
+				t.Fatalf("Unable to run more tests (deadline exceeded)")
+			}
+
 			t.Run(tc.name, func(t *testing.T) {
 				tc.validator(ctx, t, profile)
 				if t.Failed() && *postMortemLogs {
@@ -60,10 +69,11 @@ func TestPause(t *testing.T) {
 	})
 }
 
+// validateFreshStart just starts a new minikube cluster
 func validateFreshStart(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
-	args := append([]string{"start", "-p", profile, "--memory=1800", "--install-addons=false", "--wait=all"}, StartArgs()...)
+	args := append([]string{"start", "-p", profile, "--memory=2048", "--install-addons=false", "--wait=all"}, StartArgs()...)
 	rr, err := Run(t, exec.CommandContext(ctx, Target(), args...))
 	if err != nil {
 		t.Fatalf("failed to start minikube with args: %q : %v", rr.Command(), err)
@@ -75,6 +85,7 @@ func validateStartNoReconfigure(ctx context.Context, t *testing.T, profile strin
 	defer PostMortemLogs(t, profile)
 
 	args := []string{"start", "-p", profile, "--alsologtostderr", "-v=1"}
+	args = append(args, StartArgs()...)
 	rr, err := Run(t, exec.CommandContext(ctx, Target(), args...))
 	if err != nil {
 		t.Fatalf("failed to second start a running minikube with args: %q : %v", rr.Command(), err)
@@ -88,6 +99,7 @@ func validateStartNoReconfigure(ctx context.Context, t *testing.T, profile strin
 	}
 }
 
+// validatePause runs minikube pause
 func validatePause(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -98,6 +110,7 @@ func validatePause(ctx context.Context, t *testing.T, profile string) {
 	}
 }
 
+// validateUnpause runs minikube unpause
 func validateUnpause(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -108,6 +121,7 @@ func validateUnpause(ctx context.Context, t *testing.T, profile string) {
 	}
 }
 
+// validateDelete deletes the unpaused cluster
 func validateDelete(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -118,7 +132,7 @@ func validateDelete(ctx context.Context, t *testing.T, profile string) {
 	}
 }
 
-// make sure no left over left after deleting a profile such as containers or volumes
+// validateVerifyDeleted makes sure no left over left after deleting a profile such as containers or volumes
 func validateVerifyDeleted(ctx context.Context, t *testing.T, profile string) {
 	defer PostMortemLogs(t, profile)
 
@@ -160,4 +174,22 @@ func validateVerifyDeleted(ctx context.Context, t *testing.T, profile string) {
 
 	}
 
+}
+
+// validateStatus makes sure paused clusters show up in minikube status correctly
+func validateStatus(ctx context.Context, t *testing.T, profile string) {
+	defer PostMortemLogs(t, profile)
+
+	statusOutput := runStatusCmd(ctx, t, profile, false)
+	var cs cmd.ClusterState
+	if err := json.Unmarshal(statusOutput, &cs); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
+	// verify the status looks as we expect
+	if cs.StatusCode != cmd.Paused {
+		t.Fatalf("incorrect status code: %v", cs.StatusCode)
+	}
+	if cs.StatusName != "Paused" {
+		t.Fatalf("incorrect status name: %v", cs.StatusName)
+	}
 }

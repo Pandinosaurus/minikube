@@ -29,19 +29,15 @@ import (
 	"strconv"
 	"strings"
 
-	// initflag must be imported before any other minikube pkg.
-	// Fix for https://github.com/kubernetes/minikube/issues/4866
-	_ "k8s.io/minikube/pkg/initflag"
-
 	"github.com/golang-collections/collections/stack"
 	"github.com/pkg/errors"
-	"k8s.io/minikube/pkg/util/lock"
 )
 
 // exclude is a list of strings to explicitly omit from translation files.
 var exclude = []string{
 	"{{.error}}",
 	"{{.url}}",
+	"  {{.url}}",
 	"{{.msg}}: {{.err}}",
 	"{{.key}}={{.value}}",
 	"opt {{.docker_option}}",
@@ -50,10 +46,13 @@ var exclude = []string{
 	"\\n",
 	"==\u003e {{.name}} \u003c==",
 	"- {{.profile}}",
+	"    - {{.profile}}",
+	"test/integration",
+	"pkg/minikube/reason/exitcodes.go",
 }
 
 // ErrMapFile is a constant to refer to the err_map file, which contains the Advice strings.
-const ErrMapFile string = "pkg/minikube/problem/err_map.go"
+const ErrMapFile string = "pkg/minikube/reason/known_issues.go"
 
 // state is a struct that represent the current state of the extraction process
 type state struct {
@@ -93,7 +92,7 @@ func newExtractor(functionsToCheck []string) (*state, error) {
 		// Functions must be of the form "package.function"
 		t2 := strings.Split(t, ".")
 		if len(t2) < 2 {
-			return nil, errors.Wrap(nil, fmt.Sprintf("Invalid function string %s. Needs package name as well.", t))
+			return nil, errors.Errorf("invalid function string %s. Needs package name as well", t)
 		}
 		f := funcType{
 			pack: t2[0],
@@ -300,7 +299,6 @@ func checkIdentForStringValue(i *ast.Ident) string {
 		if rhs, ok := as.Rhs[0].(*ast.BasicLit); ok {
 			s = rhs.Value
 		}
-
 	}
 
 	// This Identifier is part of the const or var declaration
@@ -332,9 +330,6 @@ func checkString(s string) string {
 
 	// Parse out quote marks
 	stringToTranslate := s[1 : len(s)-1]
-
-	// Trim whitespace
-	stringToTranslate = strings.TrimSpace(stringToTranslate)
 
 	// Don't translate integers
 	if _, err := strconv.Atoi(stringToTranslate); err == nil {
@@ -420,7 +415,7 @@ func checkBinaryExpression(b *ast.BinaryExpr) string {
 		}
 	}
 
-	//Check the right side
+	// Check the right side
 	if l, ok := b.Y.(*ast.BasicLit); ok {
 		if x := checkString(l.Value); x != "" {
 			s += x
@@ -496,7 +491,7 @@ func writeStringsToFiles(e *state, output string) error {
 		if err != nil {
 			return errors.Wrap(err, "marshalling translations")
 		}
-		err = lock.WriteFile(path, c, info.Mode())
+		err = ioutil.WriteFile(path, c, info.Mode())
 		if err != nil {
 			return errors.Wrap(err, "writing translation file")
 		}
@@ -514,7 +509,7 @@ func writeStringsToFiles(e *state, output string) error {
 		return errors.Wrap(err, "marshalling translations")
 	}
 	path := filepath.Join(output, "strings.txt")
-	err = lock.WriteFile(path, c, 0644)
+	err = ioutil.WriteFile(path, c, 0644)
 	if err != nil {
 		return errors.Wrap(err, "writing translation file")
 	}

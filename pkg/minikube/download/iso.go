@@ -25,11 +25,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/juju/mutex"
 	"github.com/pkg/errors"
-	"k8s.io/minikube/pkg/minikube/localpath"
+	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/style"
 	"k8s.io/minikube/pkg/util/lock"
 	"k8s.io/minikube/pkg/version"
 )
@@ -39,8 +40,9 @@ const fileScheme = "file"
 // DefaultISOURLs returns a list of ISO URL's to consult by default, in priority order
 func DefaultISOURLs() []string {
 	v := version.GetISOVersion()
+	isoBucket := "minikube/iso"
 	return []string{
-		fmt.Sprintf("https://storage.googleapis.com/minikube/iso/minikube-%s.iso", v),
+		fmt.Sprintf("https://storage.googleapis.com/%s/minikube-%s.iso", isoBucket, v),
 		fmt.Sprintf("https://github.com/kubernetes/minikube/releases/download/%s/minikube-%s.iso", v, v),
 		fmt.Sprintf("https://kubernetes.oss-cn-hangzhou.aliyuncs.com/minikube/iso/minikube-%s.iso", v),
 	}
@@ -51,7 +53,7 @@ func LocalISOResource(isoURL string) string {
 	u, err := url.Parse(isoURL)
 	if err != nil {
 		fake := "file://" + filepath.ToSlash(isoURL)
-		glog.Errorf("%s is not a URL! Returning %s", isoURL, fake)
+		klog.Errorf("%s is not a URL! Returning %s", isoURL, fake)
 		return fake
 	}
 
@@ -73,7 +75,7 @@ func localISOPath(u *url.URL) string {
 		return u.String()
 	}
 
-	return filepath.Join(localpath.MiniPath(), "cache", "iso", path.Base(u.Path))
+	return filepath.Join(constants.ISOCacheDir, path.Base(u.Path))
 }
 
 // ISO downloads and returns the path to the downloaded ISO
@@ -83,7 +85,7 @@ func ISO(urls []string, skipChecksum bool) (string, error) {
 	for _, url := range urls {
 		err := downloadISO(url, skipChecksum)
 		if err != nil {
-			glog.Errorf("Unable to download %s: %v", url, err)
+			klog.Errorf("Unable to download %s: %v", url, err)
 			errs[url] = err.Error()
 			continue
 		}
@@ -113,9 +115,12 @@ func downloadISO(isoURL string, skipChecksum bool) error {
 
 	// Lock before we check for existence to avoid thundering herd issues
 	dst := localISOPath(u)
+	if err := os.MkdirAll(filepath.Dir(dst), 0777); err != nil {
+		return errors.Wrapf(err, "making cache image directory: %s", dst)
+	}
 	spec := lock.PathMutexSpec(dst)
 	spec.Timeout = 10 * time.Minute
-	glog.Infof("acquiring lock: %+v", spec)
+	klog.Infof("acquiring lock: %+v", spec)
 	releaser, err := mutex.Acquire(spec)
 	if err != nil {
 		return errors.Wrapf(err, "unable to acquire lock for %+v", spec)
@@ -126,7 +131,7 @@ func downloadISO(isoURL string, skipChecksum bool) error {
 		return nil
 	}
 
-	out.T(out.ISODownload, "Downloading VM boot image ...")
+	out.Step(style.ISODownload, "Downloading VM boot image ...")
 
 	urlWithChecksum := isoURL + "?checksum=file:" + isoURL + ".sha256"
 	if skipChecksum {

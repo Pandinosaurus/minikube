@@ -39,6 +39,7 @@ import (
 
 func generateTarball(kubernetesVersion, containerRuntime, tarballFilename string) error {
 	driver := kic.NewDriver(kic.Config{
+		ClusterName:       profile,
 		KubernetesVersion: kubernetesVersion,
 		ContainerRuntime:  containerRuntime,
 		OCIBinary:         oci.Docker,
@@ -60,13 +61,18 @@ func generateTarball(kubernetesVersion, containerRuntime, tarballFilename string
 		return errors.Wrap(err, "creating kic driver")
 	}
 
+	if err := verifyStorage(containerRuntime); err != nil {
+		return errors.Wrap(err, "verifying storage")
+	}
+
 	// Now, get images to pull
 	imgs, err := images.Kubeadm("", kubernetesVersion)
 	if err != nil {
 		return errors.Wrap(err, "kubeadm images")
 	}
+
 	if containerRuntime != "docker" { // kic overlay image is only needed by containerd and cri-o https://github.com/kubernetes/minikube/issues/7428
-		imgs = append(imgs, kic.OverlayImage)
+		imgs = append(imgs, images.KindNet(""))
 	}
 
 	runner := command.NewKICRunner(profile, driver.OCIBinary)
@@ -127,6 +133,20 @@ func generateTarball(kubernetesVersion, containerRuntime, tarballFilename string
 	return copyTarballToHost(tarballFilename)
 }
 
+func verifyStorage(containerRuntime string) error {
+	if containerRuntime == "docker" || containerRuntime == "containerd" {
+		if err := verifyDockerStorage(); err != nil {
+			return errors.Wrap(err, "Docker storage type is incompatible")
+		}
+	}
+	if containerRuntime == "cri-o" {
+		if err := verifyPodmanStorage(); err != nil {
+			return errors.Wrap(err, "Podman storage type is incompatible")
+		}
+	}
+	return nil
+}
+
 // returns the right command to pull image for a specific runtime
 func imagePullCommand(containerRuntime, img string) *exec.Cmd {
 	if containerRuntime == "docker" {
@@ -134,6 +154,10 @@ func imagePullCommand(containerRuntime, img string) *exec.Cmd {
 	}
 
 	if containerRuntime == "containerd" {
+		return exec.Command("docker", "exec", profile, "sudo", "crictl", "pull", img)
+	}
+
+	if containerRuntime == "cri-o" {
 		return exec.Command("docker", "exec", profile, "sudo", "crictl", "pull", img)
 	}
 	return nil
@@ -150,10 +174,14 @@ func createImageTarball(tarballFilename, containerRuntime string) error {
 	}
 
 	if containerRuntime == "containerd" {
-		dirs = append(dirs, fmt.Sprintf("./lib/containerd"))
+		dirs = append(dirs, "./lib/containerd")
 	}
 
-	args := []string{"exec", profile, "sudo", "tar", "-I", "lz4", "-C", "/var", "-cvf", tarballFilename}
+	if containerRuntime == "cri-o" {
+		dirs = append(dirs, "./lib/containers")
+	}
+
+	args := []string{"exec", profile, "sudo", "tar", "-I", "lz4", "-C", "/var", "-cf", tarballFilename}
 	args = append(args, dirs...)
 	cmd := exec.Command("docker", args...)
 	cmd.Stdout = os.Stdout

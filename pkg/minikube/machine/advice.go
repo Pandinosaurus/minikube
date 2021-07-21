@@ -22,43 +22,47 @@ import (
 	"github.com/pkg/errors"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/style"
 )
 
 // MaybeDisplayAdvice will provide advice without exiting, so minikube has a chance to try the failover
 func MaybeDisplayAdvice(err error, driver string) {
 	if errors.Is(err, oci.ErrDaemonInfo) {
 		out.ErrLn("")
-		out.ErrT(out.Conflict, "{{.driver_name}} couldn't proceed because {{.driver_name}} service is not healthy.", out.V{"driver_name": driver})
+		out.ErrT(style.Conflict, "{{.driver_name}} couldn't proceed because {{.driver_name}} service is not healthy.", out.V{"driver_name": driver})
 	}
 
 	if errors.Is(err, oci.ErrExitedUnexpectedly) {
 		out.ErrLn("")
-		out.ErrT(out.Conflict, "The minikube {{.driver_name}} container exited unexpectedly.", out.V{"driver_name": driver})
+		out.ErrT(style.Conflict, "The minikube {{.driver_name}} container exited unexpectedly.", out.V{"driver_name": driver})
 	}
 
 	if errors.Is(err, oci.ErrExitedUnexpectedly) || errors.Is(err, oci.ErrDaemonInfo) {
-		out.T(out.Tip, "If you are still interested to make {{.driver_name}} driver work. The following suggestions might help you get passed this issue:", out.V{"driver_name": driver})
-		out.T(out.Empty, `
-	- Prune unused {{.driver_name}} images, volumes and abandoned containers.`, out.V{"driver_name": driver})
-		out.T(out.Empty, `
-	- Restart your {{.driver_name}} service`, out.V{"driver_name": driver})
+		out.Styled(style.Tip, "If you are still interested to make {{.driver_name}} driver work. The following suggestions might help you get passed this issue:", out.V{"driver_name": driver})
+		if driver == oci.Docker || driver == oci.Podman {
+			out.String("\n\t")
+			out.Styled(style.Empty, `- Prune unused {{.driver_name}} images, volumes, networks and abandoned containers.
+
+				{{.driver_name}} system prune --volumes`, out.V{"driver_name": driver})
+		}
+		out.String("\n\t")
+		out.Styled(style.Empty, `- Restart your {{.driver_name}} service`, out.V{"driver_name": driver})
 		if runtime.GOOS != "linux" {
-			out.T(out.Empty, `
-	- Ensure your {{.driver_name}} daemon has access to enough CPU/memory resources. `, out.V{"driver_name": driver})
+			out.String("\n\t")
+			out.Styled(style.Empty, `- Ensure your {{.driver_name}} daemon has access to enough CPU/memory resources.`, out.V{"driver_name": driver})
 			if runtime.GOOS == "darwin" && driver == oci.Docker {
-				out.T(out.Empty, `
-	- Docs https://docs.docker.com/docker-for-mac/#resources`, out.V{"driver_name": driver})
+				out.String("\n\t")
+				out.Styled(style.Empty, `- Docs https://docs.docker.com/docker-for-mac/#resources`, out.V{"driver_name": driver})
 			}
 			if runtime.GOOS == "windows" && driver == oci.Docker {
-				out.T(out.Empty, `
-	- Docs https://docs.docker.com/docker-for-windows/#resources`, out.V{"driver_name": driver})
+				out.String("\n\t")
+				out.Styled(style.Empty, `- Docs https://docs.docker.com/docker-for-windows/#resources`, out.V{"driver_name": driver})
 			}
 		}
-		out.T(out.Empty, `
-	- Delete and recreate minikube cluster
+		out.String("\n\t")
+		out.Styled(style.Empty, `- Delete and recreate minikube cluster
 		minikube delete
 		minikube start --driver={{.driver_name}}`, out.V{"driver_name": driver})
 		// TODO #8348: maybe advice user if to set the --force-systemd https://github.com/kubernetes/minikube/issues/8348
 	}
-
 }

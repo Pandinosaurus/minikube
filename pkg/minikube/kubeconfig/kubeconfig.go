@@ -25,11 +25,11 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/tools/clientcmd/api/latest"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/constants"
 	"k8s.io/minikube/pkg/minikube/localpath"
 	pkgutil "k8s.io/minikube/pkg/util"
@@ -70,7 +70,7 @@ func PathFromEnv() string {
 		if kubeConfigFile != "" {
 			return kubeConfigFile
 		}
-		glog.Infof("Ignoring empty entry in %s env var", constants.KubeconfigEnvVar)
+		klog.Infof("Ignoring empty entry in %s env var", constants.KubeconfigEnvVar)
 	}
 	return constants.KubeconfigPath
 }
@@ -90,7 +90,7 @@ func Endpoint(contextName string, configPath ...string) (string, int, error) {
 		return "", 0, errors.Errorf("%q does not appear in %s", contextName, path)
 	}
 
-	glog.Infof("found %q server: %q", contextName, cluster.Server)
+	klog.Infof("found %q server: %q", contextName, cluster.Server)
 	u, err := url.Parse(cluster.Server)
 	if err != nil {
 		return "", 0, errors.Wrap(err, "url parse")
@@ -105,7 +105,7 @@ func Endpoint(contextName string, configPath ...string) (string, int, error) {
 }
 
 // UpdateEndpoint overwrites the IP stored in kubeconfig with the provided IP.
-func UpdateEndpoint(contextName string, hostname string, port int, confpath string) (bool, error) {
+func UpdateEndpoint(contextName string, hostname string, port int, confpath string, ext *Extension) (bool, error) {
 	if hostname == "" {
 		return false, fmt.Errorf("empty ip")
 	}
@@ -114,7 +114,7 @@ func UpdateEndpoint(contextName string, hostname string, port int, confpath stri
 	if err == nil {
 		return false, nil
 	}
-	glog.Infof("verify returned: %v", err)
+	klog.Infof("verify returned: %v", err)
 
 	cfg, err := readOrNew(confpath)
 	if err != nil {
@@ -123,8 +123,9 @@ func UpdateEndpoint(contextName string, hostname string, port int, confpath stri
 
 	address := "https://" + hostname + ":" + strconv.Itoa(port)
 
-	// if the kubeconfig is missed, create new one
-	if len(cfg.Clusters) == 0 {
+	// if the cluster setting is missed in the kubeconfig, create new one
+	if _, ok := cfg.Clusters[contextName]; !ok {
+		klog.Infof("%q context is missing from %s - will repair!", contextName, confpath)
 		lp := localpath.Profile(contextName)
 		gp := localpath.MiniPath()
 		kcs := &Settings{
@@ -135,12 +136,17 @@ func UpdateEndpoint(contextName string, hostname string, port int, confpath stri
 			CertificateAuthority: path.Join(gp, "ca.crt"),
 			KeepContext:          false,
 		}
+		if ext != nil {
+			kcs.ExtensionCluster = ext
+		}
 		err = PopulateFromSettings(kcs, cfg)
 		if err != nil {
 			return false, errors.Wrap(err, "populating kubeconfig")
 		}
+	} else {
+		cfg.Clusters[contextName].Server = address
 	}
-	cfg.Clusters[contextName].Server = address
+
 	err = writeToFile(cfg, confpath)
 	if err != nil {
 		return false, errors.Wrap(err, "write")
@@ -158,7 +164,7 @@ func writeToFile(config runtime.Object, configPath ...string) error {
 	}
 
 	if config == nil {
-		glog.Errorf("could not write to '%s': config can't be nil", fPath)
+		klog.Errorf("could not write to '%s': config can't be nil", fPath)
 	}
 
 	// encode config to YAML

@@ -9,19 +9,33 @@ description: >
 
 To create an addon, first fork the minikube repository, and check out your fork:
 
-`git clone git@github.com:<username>/minikube.git`
+```shell
+git clone git@github.com:<username>/minikube.git
+```
 
 Then go into the source directory:
 
-`cd minikube`
+```shell
+cd minikube
+```
 
 Create a subdirectory:
 
-`mkdir deploy/addons/<addon name>`
+```shell
+mkdir deploy/addons/<addon name>
+```
 
 Add your manifest YAML's to the directory you have created:
 
-`cp *.yaml deploy/addons/<addon name>`
+```shell
+cp *.yaml deploy/addons/<addon name>
+```
+
+Note: If the addon never needs authentication to GCP, then consider adding the following label to the pod's yaml:
+
+```yaml
+gcp-auth-skip-secret: "true"
+```
 
 To make the addon appear in `minikube addons list`, add it to `pkg/addons/config.go`. Here is the entry used by the `registry` addon, which will work for any addon which does not require custom code:
 
@@ -29,28 +43,36 @@ To make the addon appear in `minikube addons list`, add it to `pkg/addons/config
   {
     name:      "registry",
     set:       SetBool,
-    callbacks: []setFn{enableOrDisableAddon},
+    callbacks: []setFn{EnableOrDisableAddon},
   },
+```
+
+Next, add all required files using `//go:embed` directives to a new embed.FS variable in `deploy/addons/assets.go`. Here is the entry used by the `csi-hostpath-driver` addon:
+
+```go
+	// CsiHostpathDriverAssets assets for csi-hostpath-driver addon
+	//go:embed csi-hostpath-driver/deploy/*.tmpl csi-hostpath-driver/rbac/*.tmpl
+	CsiHostpathDriverAssets embed.FS
 ```
 
 Then, add into `pkg/minikube/assets/addons.go` the list of files to copy into the cluster, including manifests. Here is the entry used by the `registry` addon:
 
 ```go
   "registry": NewAddon([]*BinAsset{
-    MustBinAsset(
-      "deploy/addons/registry/registry-rc.yaml.tmpl",
+    MustBinAsset(addons.RegistryAssets,
+      "registry/registry-rc.yaml.tmpl",
       vmpath.GuestAddonsDir,
       "registry-rc.yaml",
       "0640",
       false),
-    MustBinAsset(
-      "deploy/addons/registry/registry-svc.yaml.tmpl",
+    MustBinAsset(addons.RegistryAssets,
+      "registry/registry-svc.yaml.tmpl",
       vmpath.GuestAddonsDir,
       "registry-svc.yaml",
       "0640",
       false),
-    MustBinAsset(
-      "deploy/addons/registry/registry-proxy.yaml.tmpl",
+    MustBinAsset(addons.RegistryAssets,
+      "registry/registry-proxy.yaml.tmpl",
       vmpath.GuestAddonsDir,
       "registry-proxy.yaml",
       "0640",
@@ -60,6 +82,7 @@ Then, add into `pkg/minikube/assets/addons.go` the list of files to copy into th
 
 The `MustBinAsset` arguments are:
 
+* asset variable (typically present in `deploy/addons/assets.go`)
 * source filename
 * destination directory (typically `vmpath.GuestAddonsDir`)
 * destination filename

@@ -19,29 +19,44 @@ package constants
 import (
 	"errors"
 	"path/filepath"
+	"time"
 
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	"k8s.io/minikube/pkg/minikube/localpath"
 )
 
+var (
+	// SupportedArchitectures is the list of supported architectures
+	SupportedArchitectures = [5]string{"amd64", "arm", "arm64", "ppc64le", "s390x"}
+)
+
 const (
 	// DefaultKubernetesVersion is the default Kubernetes version
-	DefaultKubernetesVersion = "v1.18.3"
+	// dont update till #10545 is solved
+	DefaultKubernetesVersion = "v1.21.3"
 	// NewestKubernetesVersion is the newest Kubernetes version to test against
-	NewestKubernetesVersion = "v1.18.4-rc.0"
+	// NOTE: You may need to update coreDNS & etcd versions in pkg/minikube/bootstrapper/images/images.go
+	NewestKubernetesVersion = "v1.22.0-beta.2"
 	// OldestKubernetesVersion is the oldest Kubernetes version to test against
-	OldestKubernetesVersion = "v1.13.0"
+	OldestKubernetesVersion = "v1.14.0"
 	// DefaultClusterName is the default nane for the k8s cluster
 	DefaultClusterName = "minikube"
 	// DockerDaemonPort is the port Docker daemon listening inside a minikube node (vm or container).
 	DockerDaemonPort = 2376
 	// APIServerPort is the default API server port
 	APIServerPort = 8443
+	// AutoPauseProxyPort is the port to be used as a reverse proxy for apiserver port
+	AutoPauseProxyPort = 32443
+
 	// SSHPort is the SSH serviceport on the node vm and container
 	SSHPort = 22
 	// RegistryAddonPort os the default registry addon port
 	RegistryAddonPort = 5000
+	// CRIO is the default name and spelling for the cri-o container runtime
+	CRIO = "crio"
+	// DefaultContainerRuntime is our default container runtime
+	DefaultContainerRuntime = "docker"
 
 	// APIServerName is the default API server name
 	APIServerName = "minikubeCA"
@@ -65,11 +80,42 @@ const (
 	MinikubeActiveDockerdEnv = "MINIKUBE_ACTIVE_DOCKERD"
 	// PodmanVarlinkBridgeEnv is used for podman settings
 	PodmanVarlinkBridgeEnv = "PODMAN_VARLINK_BRIDGE"
+	// PodmanContainerHostEnv is used for podman settings
+	PodmanContainerHostEnv = "CONTAINER_HOST"
+	// PodmanContainerSSHKeyEnv is used for podman settings
+	PodmanContainerSSHKeyEnv = "CONTAINER_SSHKEY"
 	// MinikubeActivePodmanEnv holds the podman service that the user's shell is pointing at
 	// value would be profile or empty if pointing to the user's host.
 	MinikubeActivePodmanEnv = "MINIKUBE_ACTIVE_PODMAN"
 	// MinikubeForceSystemdEnv is used to force systemd as cgroup manager for the container runtime
 	MinikubeForceSystemdEnv = "MINIKUBE_FORCE_SYSTEMD"
+	// TestDiskUsedEnv is used in integration tests for insufficient storage with 'minikube status'
+	TestDiskUsedEnv = "MINIKUBE_TEST_STORAGE_CAPACITY"
+
+	// scheduled stop constants
+
+	// ScheduledStopEnvFile is the environment file for scheduled-stop
+	ScheduledStopEnvFile = "/var/lib/minikube/scheduled-stop/environment"
+	// ScheduledStopSystemdService is the service file for scheduled-stop
+	ScheduledStopSystemdService = "minikube-scheduled-stop"
+
+	// MinikubeExistingPrefix is used to save the original environment when executing docker-env
+	MinikubeExistingPrefix = "MINIKUBE_EXISTING_"
+
+	// ExistingDockerHostEnv is used to save original docker environment
+	ExistingDockerHostEnv = MinikubeExistingPrefix + "DOCKER_HOST"
+	// ExistingDockerCertPathEnv is used to save original docker environment
+	ExistingDockerCertPathEnv = MinikubeExistingPrefix + "DOCKER_CERT_PATH"
+	// ExistingDockerTLSVerifyEnv is used to save original docker environment
+	ExistingDockerTLSVerifyEnv = MinikubeExistingPrefix + "DOCKER_TLS_VERIFY"
+
+	// ExistingContainerHostEnv is used to save original podman environment
+	ExistingContainerHostEnv = MinikubeExistingPrefix + "CONTAINER_HOST"
+
+	// TimeFormat is the format that should be used when outputting time
+	TimeFormat = time.RFC1123
+	// MaxResources is the value that can be passed into the memory and cpus flags to specify to use maximum resources
+	MaxResources = "max"
 )
 
 var (
@@ -85,8 +131,11 @@ var (
 
 	// DockerDaemonEnvs is list of docker-daemon related environment variables.
 	DockerDaemonEnvs = [3]string{DockerHostEnv, DockerTLSVerifyEnv, DockerCertPathEnv}
+	// ExistingDockerDaemonEnvs is list of docker-daemon related environment variables.
+	ExistingDockerDaemonEnvs = [3]string{ExistingDockerHostEnv, ExistingDockerTLSVerifyEnv, ExistingDockerCertPathEnv}
+
 	// PodmanRemoteEnvs is list of podman-remote related environment variables.
-	PodmanRemoteEnvs = [1]string{PodmanVarlinkBridgeEnv}
+	PodmanRemoteEnvs = [2]string{PodmanVarlinkBridgeEnv, PodmanContainerHostEnv}
 
 	// DefaultMinipath is the default minikube path (under the home directory)
 	DefaultMinipath = filepath.Join(homedir.HomeDir(), ".minikube")
@@ -104,7 +153,12 @@ var (
 	// KubernetesReleaseBinaries are Kubernetes release binaries required for
 	// kubeadm (kubelet, kubeadm) and the addon manager (kubectl)
 	KubernetesReleaseBinaries = []string{"kubelet", "kubeadm", "kubectl"}
-	// ImageCacheDir is the path to the image cache directory
+
+	// ISOCacheDir is the path to the virtual machine image cache directory
+	ISOCacheDir = localpath.MakeMiniPath("cache", "iso")
+	// KICCacheDir is the path to the container node image cache directory
+	KICCacheDir = localpath.MakeMiniPath("cache", "kic")
+	// ImageCacheDir is the path to the container image cache directory
 	ImageCacheDir = localpath.MakeMiniPath("cache", "images")
 
 	// DefaultNamespaces are Kubernetes namespaces used by minikube, including addons

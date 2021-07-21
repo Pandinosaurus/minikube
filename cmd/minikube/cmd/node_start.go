@@ -20,12 +20,16 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"k8s.io/minikube/pkg/minikube/driver"
+	"github.com/spf13/viper"
+	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/exit"
 	"k8s.io/minikube/pkg/minikube/machine"
 	"k8s.io/minikube/pkg/minikube/mustload"
 	"k8s.io/minikube/pkg/minikube/node"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/out/register"
+	"k8s.io/minikube/pkg/minikube/reason"
+	"k8s.io/minikube/pkg/minikube/style"
 )
 
 var nodeStartCmd = &cobra.Command{
@@ -34,7 +38,7 @@ var nodeStartCmd = &cobra.Command{
 	Long:  "Starts an existing stopped node in a cluster.",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
-			exit.UsageT("Usage: minikube node start [name]")
+			exit.Message(reason.Usage, "Usage: minikube node start [name]")
 		}
 
 		api, cc := mustload.Partial(ClusterFlagValue())
@@ -42,18 +46,19 @@ var nodeStartCmd = &cobra.Command{
 
 		n, _, err := node.Retrieve(*cc, name)
 		if err != nil {
-			exit.WithError("retrieving node", err)
+			exit.Error(reason.GuestNodeRetrieve, "retrieving node", err)
 		}
 
-		machineName := driver.MachineName(*cc, *n)
+		machineName := config.MachineName(*cc, *n)
 		if machine.IsRunning(api, machineName) {
-			out.T(out.Check, "{{.name}} is already running", out.V{"name": name})
+			out.Styled(style.Check, "{{.name}} is already running", out.V{"name": name})
 			os.Exit(0)
 		}
 
-		r, p, m, h, err := node.Provision(cc, n, false)
+		register.Reg.SetStep(register.InitialSetup)
+		r, p, m, h, err := node.Provision(cc, n, n.ControlPlane, viper.GetBool(deleteOnFailure))
 		if err != nil {
-			exit.WithError("provisioning host for node", err)
+			exit.Error(reason.GuestNodeProvision, "provisioning host for node", err)
 		}
 
 		s := node.Starter{
@@ -66,14 +71,15 @@ var nodeStartCmd = &cobra.Command{
 			ExistingAddons: nil,
 		}
 
-		_, err = node.Start(s, false)
+		_, err = node.Start(s, n.ControlPlane)
 		if err != nil {
-			_, err := maybeDeleteAndRetry(*cc, *n, nil, err)
+			_, err := maybeDeleteAndRetry(cmd, *cc, *n, nil, err)
 			if err != nil {
-				exit.WithError("failed to start node", err)
+				node.ExitIfFatal(err)
+				exit.Error(reason.GuestNodeStart, "failed to start node", err)
 			}
 		}
-		out.T(out.Happy, "Successfully started node {{.name}}!", out.V{"name": machineName})
+		out.Step(style.Happy, "Successfully started node {{.name}}!", out.V{"name": machineName})
 	},
 }
 

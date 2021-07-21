@@ -23,14 +23,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/golang/glog"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/exit"
 	"k8s.io/minikube/pkg/minikube/mustload"
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/reason"
+	"k8s.io/minikube/pkg/minikube/style"
 )
 
 var addonListOutput string
@@ -47,7 +49,7 @@ var addonsListCmd = &cobra.Command{
 	Long:  "Lists all available minikube addons as well as their current statuses (enabled/disabled)",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 0 {
-			exit.UsageT("usage: minikube addons list")
+			exit.Message(reason.Usage, "usage: minikube addons list")
 		}
 
 		_, cc := mustload.Partial(ClusterFlagValue())
@@ -57,7 +59,7 @@ var addonsListCmd = &cobra.Command{
 		case "json":
 			printAddonsJSON(cc)
 		default:
-			exit.WithCodeT(exit.BadUsage, fmt.Sprintf("invalid output format: %s. Valid values: 'list', 'json'", addonListOutput))
+			exit.Message(reason.Usage, fmt.Sprintf("invalid output format: %s. Valid values: 'list', 'json'", addonListOutput))
 		}
 	},
 }
@@ -96,7 +98,7 @@ var printAddonsList = func(cc *config.ClusterConfig) {
 
 	var tData [][]string
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Addon Name", "Profile", "Status"})
+	table.SetHeader([]string{"Addon Name", "Profile", "Status", "Maintainer"})
 	table.SetAutoFormatHeaders(true)
 	table.SetBorders(tablewriter.Border{Left: true, Top: true, Right: true, Bottom: true})
 	table.SetCenterSeparator("|")
@@ -104,7 +106,11 @@ var printAddonsList = func(cc *config.ClusterConfig) {
 	for _, addonName := range addonNames {
 		addonBundle := assets.Addons[addonName]
 		enabled := addonBundle.IsEnabled(cc)
-		tData = append(tData, []string{addonName, cc.Name, fmt.Sprintf("%s %s", stringFromStatus(enabled), iconFromStatus(enabled))})
+		maintainer := addonBundle.Maintainer
+		if maintainer == "" {
+			maintainer = "unknown (third-party)"
+		}
+		tData = append(tData, []string{addonName, cc.Name, fmt.Sprintf("%s %s", stringFromStatus(enabled), iconFromStatus(enabled)), maintainer})
 	}
 
 	table.AppendBulk(tData)
@@ -112,10 +118,10 @@ var printAddonsList = func(cc *config.ClusterConfig) {
 
 	v, _, err := config.ListProfiles()
 	if err != nil {
-		glog.Errorf("list profiles returned error: %v", err)
+		klog.Errorf("list profiles returned error: %v", err)
 	}
 	if len(v) > 1 {
-		out.T(out.Tip, "To see addons list for other profiles use: `minikube addons -p name list`")
+		out.Styled(style.Tip, "To see addons list for other profiles use: `minikube addons -p name list`")
 	}
 }
 

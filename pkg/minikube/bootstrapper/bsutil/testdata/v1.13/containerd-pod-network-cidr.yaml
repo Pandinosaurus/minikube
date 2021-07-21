@@ -31,7 +31,7 @@ etcd:
 controllerManagerExtraArgs:
   leader-elect: "false"
 schedulerExtraArgs:
-  leader-elect: "false"  
+  leader-elect: "false"
 kubernetesVersion: v1.13.0
 networking:
   dnsDomain: cluster.local
@@ -40,6 +40,7 @@ networking:
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
+cgroupDriver: systemd
 clusterDomain: "cluster.local"
 # disable disk resource management by default
 imageGCHighThresholdPercent: 100
@@ -48,3 +49,4 @@ evictionHard:
   nodefs.inodesFree: "0%"
   imagefs.available: "0%"
 failSwapOn: false
+staticPodPath: /etc/kubernetes/manifests

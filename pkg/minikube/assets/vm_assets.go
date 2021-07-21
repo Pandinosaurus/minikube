@@ -18,6 +18,7 @@ package assets
 
 import (
 	"bytes"
+	"embed"
 	"fmt"
 	"html/template"
 	"io"
@@ -25,8 +26,9 @@ import (
 	"path"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
+
+	"k8s.io/klog/v2"
 )
 
 // MemorySource is the source name used for in-memory copies
@@ -43,6 +45,7 @@ type CopyableFile interface {
 	GetPermissions() string
 	GetModTime() (time.Time, error)
 	Seek(int64, int) (int64, error)
+	Close() error
 }
 
 // BaseAsset is the base asset class
@@ -83,6 +86,7 @@ func (b *BaseAsset) GetModTime() (time.Time, error) {
 type FileAsset struct {
 	BaseAsset
 	reader io.ReadSeeker
+	file   *os.File // Optional pointer to close file through FileAsset.Close()
 }
 
 // NewMemoryAssetTarget creates a new MemoryAsset, with target
@@ -92,12 +96,7 @@ func NewMemoryAssetTarget(d []byte, targetPath, permissions string) *MemoryAsset
 
 // NewFileAsset creates a new FileAsset
 func NewFileAsset(src, targetDir, targetName, permissions string) (*FileAsset, error) {
-	glog.V(4).Infof("NewFileAsset: %s -> %s", src, path.Join(targetDir, targetName))
-
-	f, err := os.Open(src)
-	if err != nil {
-		return nil, errors.Wrap(err, "open")
-	}
+	klog.V(4).Infof("NewFileAsset: %s -> %s", src, path.Join(targetDir, targetName))
 
 	info, err := os.Stat(src)
 	if err != nil {
@@ -105,7 +104,12 @@ func NewFileAsset(src, targetDir, targetName, permissions string) (*FileAsset, e
 	}
 
 	if info.Size() == 0 {
-		glog.Warningf("NewFileAsset: %s is an empty file!", src)
+		klog.Warningf("NewFileAsset: %s is an empty file!", src)
+	}
+
+	f, err := os.Open(src)
+	if err != nil {
+		return nil, errors.Wrap(err, "open")
 	}
 
 	return &FileAsset{
@@ -116,6 +120,7 @@ func NewFileAsset(src, targetDir, targetName, permissions string) (*FileAsset, e
 			Permissions: permissions,
 		},
 		reader: io.NewSectionReader(f, 0, info.Size()),
+		file:   f,
 	}, nil
 }
 
@@ -123,7 +128,7 @@ func NewFileAsset(src, targetDir, targetName, permissions string) (*FileAsset, e
 func (f *FileAsset) GetLength() (flen int) {
 	fi, err := os.Stat(f.SourcePath)
 	if err != nil {
-		glog.Errorf("stat(%q) failed: %v", f.SourcePath, err)
+		klog.Errorf("stat(%q) failed: %v", f.SourcePath, err)
 		return 0
 	}
 	return int(fi.Size())
@@ -133,7 +138,7 @@ func (f *FileAsset) GetLength() (flen int) {
 func (f *FileAsset) GetModTime() (time.Time, error) {
 	fi, err := os.Stat(f.SourcePath)
 	if err != nil {
-		glog.Errorf("stat(%q) failed: %v", f.SourcePath, err)
+		klog.Errorf("stat(%q) failed: %v", f.SourcePath, err)
 		return time.Time{}, err
 	}
 	return fi.ModTime(), nil
@@ -150,6 +155,14 @@ func (f *FileAsset) Read(p []byte) (int, error) {
 // Seek resets the reader to offset
 func (f *FileAsset) Seek(offset int64, whence int) (int64, error) {
 	return f.reader.Seek(offset, whence)
+}
+
+// Close closes the opend file.
+func (f *FileAsset) Close() error {
+	if f.file == nil {
+		return nil
+	}
+	return f.file.Close()
 }
 
 // MemoryAsset is a memory-based asset
@@ -174,6 +187,11 @@ func (m *MemoryAsset) Seek(offset int64, whence int) (int64, error) {
 	return m.reader.Seek(offset, whence)
 }
 
+// Close implemented for CopyableFile interface. Always return nil.
+func (m *MemoryAsset) Close() error {
+	return nil
+}
+
 // NewMemoryAsset creates a new MemoryAsset
 func NewMemoryAsset(d []byte, targetDir, targetName, permissions string) *MemoryAsset {
 	return &MemoryAsset{
@@ -190,6 +208,7 @@ func NewMemoryAsset(d []byte, targetDir, targetName, permissions string) *Memory
 
 // BinAsset is a bindata (binary data) asset
 type BinAsset struct {
+	embed.FS
 	BaseAsset
 	reader   io.ReadSeeker
 	template *template.Template
@@ -197,8 +216,8 @@ type BinAsset struct {
 }
 
 // MustBinAsset creates a new BinAsset, or panics if invalid
-func MustBinAsset(name, targetDir, targetName, permissions string, isTemplate bool) *BinAsset {
-	asset, err := NewBinAsset(name, targetDir, targetName, permissions, isTemplate)
+func MustBinAsset(fs embed.FS, name, targetDir, targetName, permissions string) *BinAsset {
+	asset, err := NewBinAsset(fs, name, targetDir, targetName, permissions)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to define asset %s: %v", name, err))
 	}
@@ -206,8 +225,9 @@ func MustBinAsset(name, targetDir, targetName, permissions string, isTemplate bo
 }
 
 // NewBinAsset creates a new BinAsset
-func NewBinAsset(name, targetDir, targetName, permissions string, isTemplate bool) (*BinAsset, error) {
+func NewBinAsset(fs embed.FS, name, targetDir, targetName, permissions string) (*BinAsset, error) {
 	m := &BinAsset{
+		FS: fs,
 		BaseAsset: BaseAsset{
 			SourcePath:  name,
 			TargetDir:   targetDir,
@@ -216,7 +236,7 @@ func NewBinAsset(name, targetDir, targetName, permissions string, isTemplate boo
 		},
 		template: nil,
 	}
-	err := m.loadData(isTemplate)
+	err := m.loadData()
 	return m, err
 }
 
@@ -231,24 +251,22 @@ func defaultValue(defValue string, val interface{}) string {
 	return strVal
 }
 
-func (m *BinAsset) loadData(isTemplate bool) error {
-	contents, err := Asset(m.SourcePath)
+func (m *BinAsset) loadData() error {
+	contents, err := m.FS.ReadFile(m.SourcePath)
 	if err != nil {
 		return err
 	}
 
-	if isTemplate {
-		tpl, err := template.New(m.SourcePath).Funcs(template.FuncMap{"default": defaultValue}).Parse(string(contents))
-		if err != nil {
-			return err
-		}
-
-		m.template = tpl
+	tpl, err := template.New(m.SourcePath).Funcs(template.FuncMap{"default": defaultValue}).Parse(string(contents))
+	if err != nil {
+		return err
 	}
+
+	m.template = tpl
 
 	m.length = len(contents)
 	m.reader = bytes.NewReader(contents)
-	glog.V(1).Infof("Created asset %s with %d bytes", m.SourcePath, m.length)
+	klog.V(1).Infof("Created asset %s with %d bytes", m.SourcePath, m.length)
 	if m.length == 0 {
 		return fmt.Errorf("%s is an empty asset", m.SourcePath)
 	}
@@ -291,4 +309,9 @@ func (m *BinAsset) Read(p []byte) (int, error) {
 // Seek resets the reader to offset
 func (m *BinAsset) Seek(offset int64, whence int) (int64, error) {
 	return m.reader.Seek(offset, whence)
+}
+
+// Close implemented for CopyableFile interface. Always return nil.
+func (m *BinAsset) Close() error {
+	return nil
 }

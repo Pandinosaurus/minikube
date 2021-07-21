@@ -20,13 +20,14 @@ package sysinit
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"os/exec"
 	"path"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/vmpath"
 )
@@ -107,7 +108,7 @@ func (s *OpenRC) Start(svc string) error {
 	defer cb()
 
 	rr, err := s.r.RunCmd(exec.CommandContext(ctx, "sudo", "service", svc, "start"))
-	glog.Infof("start output: %s", rr.Output())
+	klog.Infof("start output: %s", rr.Output())
 	return err
 }
 
@@ -116,22 +117,52 @@ func (s *OpenRC) Disable(svc string) error {
 	return nil
 }
 
+// DisableNow does Disable + Stop
+func (s *OpenRC) DisableNow(svc string) error {
+	// supposed to do disable + stop
+	// disable does nothing for OpenRC, so just Stop here
+	return s.Stop(svc)
+}
+
+// Mask does nothing
+func (s *OpenRC) Mask(svc string) error {
+	return nil
+}
+
 // Enable does nothing
 func (s *OpenRC) Enable(svc string) error {
+	return nil
+}
+
+// EnableNow does Enable + Start
+func (s *OpenRC) EnableNow(svc string) error {
+	// supposed to do enable + start
+	// enable does nothing for OpenRC, so just Start here
+	return s.Start(svc)
+}
+
+// Unmask does nothing
+func (s *OpenRC) Unmask(svc string) error {
 	return nil
 }
 
 // Restart restarts a service
 func (s *OpenRC) Restart(svc string) error {
 	rr, err := s.r.RunCmd(exec.Command("sudo", "service", svc, "restart"))
-	glog.Infof("restart output: %s", rr.Output())
+	klog.Infof("restart output: %s", rr.Output())
 	return err
+}
+
+// Reload reloads a service
+// currently only used by our docker-env that doesn't need openrc implementation
+func (s *OpenRC) Reload(svc string) error {
+	return fmt.Errorf("reload is not implemented for OpenRC yet ! Please implement if needed")
 }
 
 // Stop stops a service
 func (s *OpenRC) Stop(svc string) error {
 	rr, err := s.r.RunCmd(exec.Command("sudo", "service", svc, "stop"))
-	glog.Infof("stop output: %s", rr.Output())
+	klog.Infof("stop output: %s", rr.Output())
 	return err
 }
 

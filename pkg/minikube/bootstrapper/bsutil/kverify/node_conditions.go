@@ -18,14 +18,17 @@ limitations under the License.
 package kverify
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
+	kconst "k8s.io/kubernetes/cmd/kubeadm/app/constants"
+	"k8s.io/minikube/pkg/util/retry"
 )
 
 // NodeCondition represents a favorable or unfavorable node condition.
@@ -96,20 +99,28 @@ func (e *ErrNetworkNotReady) Error() string {
 
 // NodePressure verfies that node is not under disk, memory, pid or network pressure.
 func NodePressure(cs *kubernetes.Clientset) error {
-	glog.Info("verifying NodePressure condition ...")
+	klog.Info("verifying NodePressure condition ...")
 	start := time.Now()
 	defer func() {
-		glog.Infof("duration metric: took %s to run NodePressure ...", time.Since(start))
+		klog.Infof("duration metric: took %s to run NodePressure ...", time.Since(start))
 	}()
 
-	ns, err := cs.CoreV1().Nodes().List(meta.ListOptions{})
+	var ns *v1.NodeList
+	var err error
+
+	listNodes := func() error {
+		ns, err = cs.CoreV1().Nodes().List(context.Background(), meta.ListOptions{})
+		return err
+	}
+
+	err = retry.Expo(listNodes, kconst.APICallRetryInterval, 2*time.Minute)
 	if err != nil {
-		return errors.Wrap(err, "list nodes")
+		return errors.Wrap(err, "list nodes retry")
 	}
 
 	for _, n := range ns.Items {
-		glog.Infof("node storage ephemeral capacity is %s", n.Status.Capacity.StorageEphemeral())
-		glog.Infof("node cpu capacity is %s", n.Status.Capacity.Cpu().AsDec())
+		klog.Infof("node storage ephemeral capacity is %s", n.Status.Capacity.StorageEphemeral())
+		klog.Infof("node cpu capacity is %s", n.Status.Capacity.Cpu().AsDec())
 		for _, c := range n.Status.Conditions {
 			pc := NodeCondition{Type: c.Type, Status: c.Status, Reason: c.Reason, Message: c.Message}
 			if pc.DiskPressure() {

@@ -26,24 +26,31 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"github.com/docker/machine/libmachine/drivers"
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/driver"
 	"k8s.io/minikube/pkg/minikube/localpath"
+	"k8s.io/minikube/pkg/minikube/out"
 	"k8s.io/minikube/pkg/minikube/registry"
 )
 
-// minReqPodmanVer is required the mininum version of podman to be installed for podman driver.
-var minReqPodmanVer = semver.Version{Major: 1, Minor: 7, Patch: 0}
+var docURL = "https://minikube.sigs.k8s.io/docs/drivers/podman/"
+
+// minReqPodmanVer is required the minimum version of podman to be installed for podman driver.
+var minReqPodmanVer = semver.Version{Major: 2, Minor: 1, Patch: 0}
 
 func init() {
-	priority := registry.Experimental
+	priority := registry.Default
+	if runtime.GOOS != "linux" {
+		// requires external VM set up
+		priority = registry.Experimental
+	}
 	// Staged rollout for default:
-	// - Linux
+	// - Linux (sudo podman)
 	// - macOS (podman-remote)
 	// - Windows (podman-remote)
 
@@ -52,6 +59,7 @@ func init() {
 		Config:   configure,
 		Init:     func() drivers.Driver { return kic.NewDriver(kic.Config{OCIBinary: oci.Podman}) },
 		Status:   status,
+		Default:  true,
 		Priority: priority,
 	}); err != nil {
 		panic(fmt.Sprintf("register failed: %v", err))
@@ -59,25 +67,39 @@ func init() {
 }
 
 func configure(cc config.ClusterConfig, n config.Node) (interface{}, error) {
+	mounts := make([]oci.Mount, len(cc.ContainerVolumeMounts))
+	for i, spec := range cc.ContainerVolumeMounts {
+		var err error
+		mounts[i], err = oci.ParseMountString(spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	extraArgs := []string{}
+
+	for _, port := range cc.ExposedPorts {
+		extraArgs = append(extraArgs, "-p", port)
+	}
+
 	return kic.NewDriver(kic.Config{
-		MachineName:       driver.MachineName(cc, n),
+		ClusterName:       cc.Name,
+		MachineName:       config.MachineName(cc, n),
 		StorePath:         localpath.MiniPath(),
 		ImageDigest:       strings.Split(cc.KicBaseImage, "@")[0], // for podman does not support docker images references with both a tag and digest.
+		Mounts:            mounts,
 		CPU:               cc.CPUs,
 		Memory:            cc.Memory,
 		OCIBinary:         oci.Podman,
 		APIServerPort:     cc.Nodes[0].Port,
 		KubernetesVersion: cc.KubernetesConfig.KubernetesVersion,
 		ContainerRuntime:  cc.KubernetesConfig.ContainerRuntime,
+		ExtraArgs:         extraArgs,
+		ListenAddress:     cc.ListenAddress,
 	}), nil
 }
 
 func status() registry.State {
-	docURL := "https://minikube.sigs.k8s.io/docs/drivers/podman/"
-	if runtime.GOARCH != "amd64" {
-		return registry.State{Error: fmt.Errorf("podman driver is not supported on %q systems yet", runtime.GOARCH), Installed: false, Healthy: false, Fix: "Try other drivers", Doc: docURL}
-	}
-
 	podman, err := exec.LookPath(oci.Podman)
 	if err != nil {
 		return registry.State{Error: err, Installed: false, Healthy: false, Fix: "Install Podman", Doc: docURL}
@@ -94,27 +116,28 @@ func status() registry.State {
 		cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C") // sudo is localized
 	}
 	o, err := cmd.Output()
-	output := string(o)
+	output := strings.TrimSpace(string(o))
 	if err == nil {
-		glog.Infof("podman version: %s", output)
+		klog.Infof("podman version: %s", output)
 
 		v, err := semver.Make(output)
 		if err != nil {
-			return registry.State{Error: err, Installed: true, Healthy: false, Fix: "Cant verify minimum required version for podman . See podman website for installation guide.", Doc: "https://podman.io/getting-started/installation.html"}
+			return registry.State{Error: err, Installed: true, Running: true, Healthy: false, Fix: "Cant verify minimum required version for podman . See podman website for installation guide.", Doc: "https://podman.io/getting-started/installation.html"}
 		}
 
 		if v.LT(minReqPodmanVer) {
-			glog.Warningf("Warning ! minimum required version for podman is %s. your version is %q. minikube might not work. use at your own risk. To install latest version please see https://podman.io/getting-started/installation.html ", minReqPodmanVer.String(), v.String())
+			out.WarningT(`The minimum required version for podman is "{{.minVersion}}". your version is "{{.currentVersion}}". minikube might not work. use at your own risk. To install latest version please see https://podman.io/getting-started/installation.html`,
+				out.V{"minVersion": minReqPodmanVer.String(), "currentVersion": v.String()})
 		}
 
 		return registry.State{Installed: true, Healthy: true}
 	}
 
-	glog.Warningf("podman returned error: %v", err)
+	klog.Warningf("podman returned error: %v", err)
 
 	// Basic timeout
 	if ctx.Err() == context.DeadlineExceeded {
-		return registry.State{Error: err, Installed: true, Healthy: false, Fix: "Restart the Podman service", Doc: docURL}
+		return registry.State{Error: err, Installed: true, Running: false, Healthy: false, Fix: "Restart the Podman service", Doc: docURL}
 	}
 
 	username := "$USER"

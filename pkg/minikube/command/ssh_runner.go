@@ -26,11 +26,11 @@ import (
 	"time"
 
 	"github.com/docker/machine/libmachine/drivers"
-	"github.com/golang/glog"
 	"github.com/kballard/go-shellquote"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/assets"
 	"k8s.io/minikube/pkg/minikube/sshutil"
 	"k8s.io/minikube/pkg/util/retry"
@@ -46,6 +46,7 @@ var (
 type SSHRunner struct {
 	d drivers.Driver
 	c *ssh.Client
+	s *ssh.Session
 }
 
 // NewSSHRunner returns a new SSHRunner that will run commands
@@ -79,7 +80,7 @@ func (s *SSHRunner) session() (*ssh.Session, error) {
 
 		sess, err = client.NewSession()
 		if err != nil {
-			glog.Warningf("session error, resetting client: %v", err)
+			klog.Warningf("session error, resetting client: %v", err)
 			s.c = nil
 			return err
 		}
@@ -96,7 +97,7 @@ func (s *SSHRunner) session() (*ssh.Session, error) {
 // Remove runs a command to delete a file on the remote.
 func (s *SSHRunner) Remove(f assets.CopyableFile) error {
 	dst := path.Join(f.GetTargetDir(), f.GetTargetName())
-	glog.Infof("rm: %s", dst)
+	klog.Infof("rm: %s", dst)
 
 	sess, err := s.session()
 	if err != nil {
@@ -122,14 +123,14 @@ func teeSSH(s *ssh.Session, cmd string, outB io.Writer, errB io.Writer) error {
 	wg.Add(2)
 
 	go func() {
-		if err := teePrefix(ErrPrefix, errPipe, errB, glog.V(8).Infof); err != nil {
-			glog.Errorf("tee stderr: %v", err)
+		if err := teePrefix(ErrPrefix, errPipe, errB, klog.V(8).Infof); err != nil {
+			klog.Errorf("tee stderr: %v", err)
 		}
 		wg.Done()
 	}()
 	go func() {
-		if err := teePrefix(OutPrefix, outPipe, outB, glog.V(8).Infof); err != nil {
-			glog.Errorf("tee stdout: %v", err)
+		if err := teePrefix(OutPrefix, outPipe, outB, klog.V(8).Infof); err != nil {
+			klog.Errorf("tee stdout: %v", err)
 		}
 		wg.Done()
 	}()
@@ -145,7 +146,7 @@ func (s *SSHRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	}
 
 	rr := &RunResult{Args: cmd.Args}
-	glog.Infof("Run: %v", rr.Command())
+	klog.Infof("Run: %v", rr.Command())
 
 	var outb, errb io.Writer
 	start := time.Now()
@@ -172,7 +173,7 @@ func (s *SSHRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	defer func() {
 		if err := sess.Close(); err != nil {
 			if err != io.EOF {
-				glog.Errorf("session close: %v", err)
+				klog.Errorf("session close: %v", err)
 			}
 		}
 	}()
@@ -185,8 +186,108 @@ func (s *SSHRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	}
 	// Decrease log spam
 	if elapsed > (1 * time.Second) {
-		glog.Infof("Completed: %s: (%s)", rr.Command(), elapsed)
+		klog.Infof("Completed: %s: (%s)", rr.Command(), elapsed)
 	}
+	if err == nil {
+		return rr, nil
+	}
+
+	return rr, fmt.Errorf("%s: %v\nstdout:\n%s\nstderr:\n%s", rr.Command(), err, rr.Stdout.String(), rr.Stderr.String())
+}
+
+// teeSSHStart starts a non-blocking SSH command, streaming stdout, stderr to logs
+func teeSSHStart(s *ssh.Session, cmd string, outB io.Writer, errB io.Writer, wg *sync.WaitGroup) error {
+	outPipe, err := s.StdoutPipe()
+	if err != nil {
+		return errors.Wrap(err, "stdout")
+	}
+
+	errPipe, err := s.StderrPipe()
+	if err != nil {
+		return errors.Wrap(err, "stderr")
+	}
+
+	go func() {
+		if err := teePrefix(ErrPrefix, errPipe, errB, klog.V(8).Infof); err != nil {
+			klog.Errorf("tee stderr: %v", err)
+		}
+		wg.Done()
+	}()
+	go func() {
+		if err := teePrefix(OutPrefix, outPipe, outB, klog.V(8).Infof); err != nil {
+			klog.Errorf("tee stdout: %v", err)
+		}
+		wg.Done()
+	}()
+
+	return s.Start(cmd)
+}
+
+// StartCmd implements the Command Runner interface to start a exec.Cmd object
+func (s *SSHRunner) StartCmd(cmd *exec.Cmd) (*StartedCmd, error) {
+	if cmd.Stdin != nil {
+		return nil, fmt.Errorf("SSHRunner does not support stdin - you could be the first to add it")
+	}
+
+	if s.s != nil {
+		return nil, fmt.Errorf("another SSH command has been started and is currently running")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	rr := &RunResult{Args: cmd.Args}
+	sc := &StartedCmd{cmd: cmd, rr: rr, wg: &wg}
+	klog.Infof("Start: %v", rr.Command())
+
+	var outb, errb io.Writer
+
+	if cmd.Stdout == nil {
+		var so bytes.Buffer
+		outb = io.MultiWriter(&so, &rr.Stdout)
+	} else {
+		outb = io.MultiWriter(cmd.Stdout, &rr.Stdout)
+	}
+
+	if cmd.Stderr == nil {
+		var se bytes.Buffer
+		errb = io.MultiWriter(&se, &rr.Stderr)
+	} else {
+		errb = io.MultiWriter(cmd.Stderr, &rr.Stderr)
+	}
+
+	sess, err := s.session()
+	if err != nil {
+		return sc, errors.Wrap(err, "NewSession")
+	}
+
+	s.s = sess
+
+	err = teeSSHStart(s.s, shellquote.Join(cmd.Args...), outb, errb, &wg)
+
+	return sc, err
+}
+
+// WaitCmd implements the Command Runner interface to wait until a started exec.Cmd object finishes
+func (s *SSHRunner) WaitCmd(sc *StartedCmd) (*RunResult, error) {
+	if s.s == nil {
+		return nil, fmt.Errorf("there is no SSH command started")
+	}
+
+	rr := sc.rr
+
+	err := s.s.Wait()
+	if exitError, ok := err.(*exec.ExitError); ok {
+		rr.ExitCode = exitError.ExitCode()
+	}
+
+	sc.wg.Wait()
+
+	if err := s.s.Close(); err != io.EOF {
+		klog.Errorf("session close: %v", err)
+	}
+
+	s.s = nil
+
 	if err == nil {
 		return rr, nil
 	}
@@ -202,19 +303,19 @@ func (s *SSHRunner) Copy(f assets.CopyableFile) error {
 	if f.GetLength() > 2048 {
 		exists, err := fileExists(s, f, dst)
 		if err != nil {
-			glog.Infof("existence check for %s: %v", dst, err)
+			klog.Infof("existence check for %s: %v", dst, err)
 		}
 
 		if exists {
-			glog.Infof("copy: skipping %s (exists)", dst)
+			klog.Infof("copy: skipping %s (exists)", dst)
 			return nil
 		}
 	}
 
 	src := f.GetSourcePath()
-	glog.Infof("scp %s --> %s (%d bytes)", src, dst, f.GetLength())
+	klog.Infof("scp %s --> %s (%d bytes)", src, dst, f.GetLength())
 	if f.GetLength() == 0 {
-		glog.Warningf("0 byte asset: %+v", f)
+		klog.Warningf("0 byte asset: %+v", f)
 	}
 
 	sess, err := s.session()
@@ -224,7 +325,7 @@ func (s *SSHRunner) Copy(f assets.CopyableFile) error {
 	defer func() {
 		if err := sess.Close(); err != nil {
 			if err != io.EOF {
-				glog.Errorf("session close: %v", err)
+				klog.Errorf("session close: %v", err)
 			}
 		}
 	}()
@@ -243,7 +344,7 @@ func (s *SSHRunner) Copy(f assets.CopyableFile) error {
 		header := fmt.Sprintf("C%s %d %s\n", f.GetPermissions(), f.GetLength(), f.GetTargetName())
 		fmt.Fprint(w, header)
 		if f.GetLength() == 0 {
-			glog.Warningf("asked to copy a 0 byte asset: %+v", f)
+			klog.Warningf("asked to copy a 0 byte asset: %+v", f)
 			fmt.Fprint(w, "\x00")
 			return nil
 		}
@@ -262,8 +363,8 @@ func (s *SSHRunner) Copy(f assets.CopyableFile) error {
 	scp := fmt.Sprintf("sudo test -d %s && sudo scp -t %s", f.GetTargetDir(), f.GetTargetDir())
 	mtime, err := f.GetModTime()
 	if err != nil {
-		glog.Infof("error getting modtime for %s: %v", dst, err)
-	} else {
+		klog.Infof("error getting modtime for %s: %v", dst, err)
+	} else if mtime != (time.Time{}) {
 		scp += fmt.Sprintf(" && sudo touch -d \"%s\" %s", mtime.Format(layout), dst)
 	}
 	out, err := sess.CombinedOutput(scp)

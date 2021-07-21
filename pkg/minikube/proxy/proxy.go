@@ -20,12 +20,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/minikube/config"
 	"k8s.io/minikube/pkg/minikube/out"
 )
@@ -114,7 +115,7 @@ func checkEnv(ip string, env string) bool {
 	for _, b := range noProxyBlocks {
 		yes, err := isInBlock(ip, b)
 		if err != nil {
-			glog.Warningf("fail to check proxy env: %v", err)
+			klog.Warningf("fail to check proxy env: %v", err)
 		}
 		if yes {
 			return true
@@ -145,7 +146,7 @@ func UpdateTransport(cfg *rest.Config) *rest.Config {
 			ht.Proxy = nil
 			rt = ht
 		} else {
-			glog.Errorf("Error while casting RoundTripper (of type %T) to *http.Transport : %v", rt, ok)
+			klog.Errorf("Error while casting RoundTripper (of type %T) to *http.Transport : %v", rt, ok)
 		}
 		return rt
 	}
@@ -160,8 +161,22 @@ func SetDockerEnv() []string {
 			// TODO (@medyagh): if user has both http_proxy & HTTPS_PROXY set merge them.
 			k = strings.ToUpper(k)
 			if k == "HTTP_PROXY" || k == "HTTPS_PROXY" {
-				if strings.HasPrefix(v, "localhost") || strings.HasPrefix(v, "127.0") {
-					out.WarningT("Not passing {{.name}}={{.value}} to docker env.", out.V{"name": k, "value": v})
+				isLocalProxy := func(url string) bool {
+					return strings.HasPrefix(url, "localhost") || strings.HasPrefix(url, "127.0")
+				}
+
+				normalizedURL := v
+				if !strings.Contains(v, "://") {
+					normalizedURL = "http://" + v // by default, assumes the url is HTTP scheme
+				}
+				u, err := url.Parse(normalizedURL)
+				if err != nil {
+					out.WarningT("Error parsing {{.name}}={{.value}}, {{.err}}", out.V{"name": k, "value": v, "err": err})
+					continue
+				}
+
+				if isLocalProxy(u.Host) {
+					out.WarningT("Local proxy ignored: not passing {{.name}}={{.value}} to docker env.", out.V{"name": k, "value": v})
 					continue
 				}
 			}

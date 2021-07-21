@@ -29,11 +29,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
+	"k8s.io/klog/v2"
 	"k8s.io/minikube/pkg/drivers/kic/oci"
 	"k8s.io/minikube/pkg/minikube/assets"
+	"k8s.io/minikube/pkg/minikube/detect"
 )
 
 // kicRunner runs commands inside a container
@@ -90,7 +91,7 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	oc.Env = cmd.Env
 
 	rr := &RunResult{Args: cmd.Args}
-	glog.Infof("Run: %v", rr.Command())
+	klog.Infof("Run: %v", rr.Command())
 
 	var outb, errb io.Writer
 	if oc.Stdout == nil {
@@ -111,7 +112,7 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	oc.Stderr = errb
 
 	oc = oci.PrefixCmd(oc)
-	glog.Infof("Args: %v", oc.Args)
+	klog.Infof("Args: %v", oc.Args)
 
 	start := time.Now()
 
@@ -120,7 +121,7 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 	if err == nil {
 		// Reduce log spam
 		if elapsed > (1 * time.Second) {
-			glog.Infof("Done: %v: (%s)", oc.Args, elapsed)
+			klog.Infof("Done: %v: (%s)", oc.Args, elapsed)
 		}
 		return rr, nil
 	}
@@ -131,6 +132,14 @@ func (k *kicRunner) RunCmd(cmd *exec.Cmd) (*RunResult, error) {
 
 }
 
+func (k *kicRunner) StartCmd(cmd *exec.Cmd) (*StartedCmd, error) {
+	return nil, fmt.Errorf("kicRunner does not support StartCmd - you could be the first to add it")
+}
+
+func (k *kicRunner) WaitCmd(sc *StartedCmd) (*RunResult, error) {
+	return nil, fmt.Errorf("kicRunner does not support WaitCmd - you could be the first to add it")
+}
+
 // Copy copies a file and its permissions
 func (k *kicRunner) Copy(f assets.CopyableFile) error {
 	dst := path.Join(path.Join(f.GetTargetDir(), f.GetTargetName()))
@@ -139,21 +148,21 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 	if f.GetLength() > 4096 {
 		exists, err := fileExists(k, f, dst)
 		if err != nil {
-			glog.Infof("existence error for %s: %v", dst, err)
+			klog.Infof("existence error for %s: %v", dst, err)
 		}
 		if exists {
-			glog.Infof("copy: skipping %s (exists)", dst)
+			klog.Infof("copy: skipping %s (exists)", dst)
 			return nil
 		}
 	}
 
 	src := f.GetSourcePath()
 	if f.GetLength() == 0 {
-		glog.Warningf("0 byte asset: %+v", f)
+		klog.Warningf("0 byte asset: %+v", f)
 	}
 
 	perms, err := strconv.ParseInt(f.GetPermissions(), 8, 0)
-	if err != nil {
+	if err != nil || perms > 07777 {
 		return errors.Wrapf(err, "error converting permissions %s to integer", f.GetPermissions())
 	}
 
@@ -162,13 +171,13 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 		fi, err := os.Stat(src)
 		if err == nil {
 			if fi.Mode() == os.FileMode(perms) {
-				glog.Infof("%s (direct): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
+				klog.Infof("%s (direct): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
 				return k.copy(src, dst)
 			}
 
 			// If >1MB, avoid local copy
 			if fi.Size() > (1024 * 1024) {
-				glog.Infof("%s (chmod): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
+				klog.Infof("%s (chmod): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
 				if err := k.copy(src, dst); err != nil {
 					return err
 				}
@@ -176,8 +185,14 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 			}
 		}
 	}
-	glog.Infof("%s (temp): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
-	tf, err := ioutil.TempFile("", "tmpf-memory-asset")
+	klog.Infof("%s (temp): %s --> %s (%d bytes)", k.ociBin, src, dst, f.GetLength())
+
+	tmpFolder, err := tempDirectory(detect.MinikubeInstalledViaSnap(), detect.DockerInstalledViaSnap())
+	if err != nil {
+		return errors.Wrap(err, "determining temp directory")
+	}
+
+	tf, err := ioutil.TempFile(tmpFolder, "tmpf-memory-asset")
 	if err != nil {
 		return errors.Wrap(err, "creating temporary file")
 	}
@@ -187,6 +202,23 @@ func (k *kicRunner) Copy(f assets.CopyableFile) error {
 		return errors.Wrap(err, "write")
 	}
 	return k.copy(tf.Name(), dst)
+}
+
+// tempDirectory returns the directory to use as the temp directory
+// or an empty string if it should use the os default temp directory.
+func tempDirectory(isMinikubeSnap bool, isDockerSnap bool) (string, error) {
+	if !isMinikubeSnap && !isDockerSnap {
+		return "", nil
+	}
+
+	// Snap only allows an application to see its own files in /tmp, making Docker unable to copy memory assets
+	// https://github.com/kubernetes/minikube/issues/10020
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.Wrap(err, "detecting home dir")
+	}
+	return home, nil
 }
 
 func (k *kicRunner) copy(src string, dst string) error {
@@ -206,7 +238,7 @@ func (k *kicRunner) chmod(dst string, perm string) error {
 func copyToPodman(src string, dest string) error {
 	if runtime.GOOS == "linux" {
 		cmd := oci.PrefixCmd(exec.Command(oci.Podman, "cp", src, dest))
-		glog.Infof("Run: %v", cmd)
+		klog.Infof("Run: %v", cmd)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return errors.Wrapf(err, "podman copy %s into %s, output: %s", src, dest, string(out))
 		}
@@ -221,7 +253,7 @@ func copyToPodman(src string, dest string) error {
 		path := parts[1]
 		cmd := exec.Command(oci.Podman, "exec", "-i", container, "tee", path)
 		cmd.Stdin = file
-		glog.Infof("Run: %v", cmd)
+		klog.Infof("Run: %v", cmd)
 		if err := cmd.Run(); err != nil {
 			return errors.Wrapf(err, "podman copy %s into %s", src, dest)
 		}
@@ -239,7 +271,7 @@ func copyToDocker(src string, dest string) error {
 // Remove removes a file
 func (k *kicRunner) Remove(f assets.CopyableFile) error {
 	dst := path.Join(f.GetTargetDir(), f.GetTargetName())
-	glog.Infof("rm: %s", dst)
+	klog.Infof("rm: %s", dst)
 
 	_, err := k.RunCmd(exec.Command("sudo", "rm", dst))
 	return err
@@ -248,7 +280,7 @@ func (k *kicRunner) Remove(f assets.CopyableFile) error {
 // isTerminal returns true if the writer w is a terminal
 func isTerminal(w io.Writer) bool {
 	if v, ok := (w).(*os.File); ok {
-		return terminal.IsTerminal(int(v.Fd()))
+		return term.IsTerminal(int(v.Fd()))
 	}
 	return false
 }

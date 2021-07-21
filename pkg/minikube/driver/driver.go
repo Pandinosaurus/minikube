@@ -21,10 +21,13 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/golang/glog"
-	"k8s.io/minikube/pkg/minikube/config"
+	"k8s.io/klog/v2"
+	"k8s.io/minikube/pkg/drivers/kic/oci"
+	"k8s.io/minikube/pkg/minikube/constants"
+	"k8s.io/minikube/pkg/minikube/detect"
 	"k8s.io/minikube/pkg/minikube/registry"
 )
 
@@ -37,6 +40,8 @@ const (
 	Mock = "mock"
 	// None driver
 	None = "none"
+	// SSH driver
+	SSH = "ssh"
 	// KVM2 driver
 	KVM2 = "kvm2"
 	// VirtualBox driver
@@ -45,12 +50,19 @@ const (
 	HyperKit = "hyperkit"
 	// VMware driver
 	VMware = "vmware"
-	// VMwareFusion driver
+	// VMwareFusion driver (obsolete)
 	VMwareFusion = "vmwarefusion"
 	// HyperV driver
 	HyperV = "hyperv"
 	// Parallels driver
 	Parallels = "parallels"
+
+	// AliasKVM is driver name alias for kvm2
+	AliasKVM = "kvm"
+	// AliasSSH is driver name alias for ssh
+	AliasSSH = "generic"
+	// AliasNative is driver name alias for None driver
+	AliasNative = "native"
 )
 
 var (
@@ -60,13 +72,20 @@ var (
 
 // SupportedDrivers returns a list of supported drivers
 func SupportedDrivers() []string {
-	return supportedDrivers
+	arch := detect.RuntimeArch()
+	for _, a := range constants.SupportedArchitectures {
+		if arch == a {
+			return supportedDrivers
+		}
+	}
+	// remote cluster only
+	return []string{SSH}
 }
 
 // DisplaySupportedDrivers returns a string with a list of supported drivers
 func DisplaySupportedDrivers() string {
 	var sd []string
-	for _, d := range supportedDrivers {
+	for _, d := range SupportedDrivers() {
 		if registry.Driver(d).Priority == registry.Experimental {
 			sd = append(sd, d+" (experimental)")
 			continue
@@ -78,7 +97,7 @@ func DisplaySupportedDrivers() string {
 
 // Supported returns if the driver is supported on this host.
 func Supported(name string) bool {
-	for _, d := range supportedDrivers {
+	for _, d := range SupportedDrivers() {
 		if name == d {
 			return true
 		}
@@ -90,6 +109,10 @@ func Supported(name string) bool {
 func MachineType(name string) string {
 	if IsKIC(name) {
 		return "container"
+	}
+
+	if IsSSH(name) {
+		return "bare metal machine"
 	}
 
 	if IsVM(name) {
@@ -105,9 +128,30 @@ func IsKIC(name string) bool {
 	return name == Docker || name == Podman
 }
 
+// IsDocker checks if the driver docker
+func IsDocker(name string) bool {
+	return name == Docker
+}
+
+// IsDockerDesktop checks if the driver is a Docker for Desktop (Docker on windows or MacOs)
+// for linux and exotic archs, this will be false
+func IsDockerDesktop(name string) bool {
+	if IsDocker(name) {
+		if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+			return true
+		}
+	}
+	return false
+}
+
 // IsMock checks if the driver is a mock
 func IsMock(name string) bool {
 	return name == Mock
+}
+
+// IsKVM checks if the driver is a KVM[2]
+func IsKVM(name string) bool {
+	return name == KVM2 || name == AliasKVM
 }
 
 // IsVM checks if the driver is a VM
@@ -123,22 +167,25 @@ func BareMetal(name string) bool {
 	return name == None || name == Mock
 }
 
-// NeedsRoot returns true if driver needs to run with root privileges
-func NeedsRoot(name string) bool {
-	return name == None
+// IsSSH checks if the driver is ssh
+func IsSSH(name string) bool {
+	return name == SSH
+}
+
+func AllowsPreload(driverName string) bool {
+	return !BareMetal(driverName) && !IsSSH(driverName)
 }
 
 // NeedsPortForward returns true if driver is unable provide direct IP connectivity
 func NeedsPortForward(name string) bool {
+	if !IsKIC(name) {
+		return false
+	}
+	if oci.IsExternalDaemonHost(name) {
+		return true
+	}
 	// Docker for Desktop
-	return IsKIC(name) && (runtime.GOOS == "darwin" || runtime.GOOS == "windows" || IsMicrosoftWSL())
-}
-
-// IsMicrosoftWSL will return true if process is running in WSL in windows
-// checking for WSL env var based on this https://github.com/microsoft/WSL/issues/423#issuecomment-608237689
-// also based on https://github.com/microsoft/vscode/blob/90a39ba0d49d75e9a4d7e62a6121ad946ecebc58/resources/win32/bin/code.sh#L24
-func IsMicrosoftWSL() bool {
-	return os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSLPATH") != "" || os.Getenv("WSLENV") != ""
+	return runtime.GOOS == "darwin" || runtime.GOOS == "windows" || detect.IsMicrosoftWSL()
 }
 
 // HasResourceLimits returns true if driver can set resource limits such as memory size or CPU count.
@@ -156,6 +203,19 @@ func NeedsShutdown(name string) bool {
 	return false
 }
 
+// FullName will return the human-known and title formatted name for the driver based on platform
+func FullName(name string) string {
+	switch name {
+	case oci.Docker:
+		if IsDockerDesktop(name) {
+			return "Docker Desktop"
+		}
+		return "Docker"
+	default:
+		return strings.Title(name)
+	}
+}
+
 // FlagHints are hints for what default options should be used for this driver
 type FlagHints struct {
 	ExtraOptions     []string
@@ -169,9 +229,6 @@ func FlagDefaults(name string) FlagHints {
 	fh := FlagHints{}
 	if name != None {
 		fh.CacheImages = true
-		if name == Docker {
-			fh.ExtraOptions = append(fh.ExtraOptions, fmt.Sprintf("kubeadm.pod-network-cidr=%s", config.DefaultPodCIDR))
-		}
 		return fh
 	}
 
@@ -205,16 +262,21 @@ func Suggest(options []registry.DriverState) (registry.DriverState, []registry.D
 		}
 
 		if !ds.State.Healthy {
-			glog.Infof("not recommending %q due to health: %v", ds.Name, ds.State.Error)
+			klog.Infof("not recommending %q due to health: %v", ds.Name, ds.State.Error)
+			continue
+		}
+
+		if !ds.Default {
+			klog.Infof("not recommending %q due to default: %v", ds.Name, ds.Default)
 			continue
 		}
 
 		if ds.Priority <= registry.Discouraged {
-			glog.Infof("not recommending %q due to priority: %d", ds.Name, ds.Priority)
+			klog.Infof("not recommending %q due to priority: %d", ds.Name, ds.Priority)
 			continue
 		}
 		if ds.Priority > pick.Priority {
-			glog.V(1).Infof("%q has a higher priority (%d) than %q (%d)", ds.Name, ds.Priority, pick.Name, pick.Priority)
+			klog.V(1).Infof("%q has a higher priority (%d) than %q (%d)", ds.Name, ds.Priority, pick.Name, pick.Priority)
 			pick = ds
 		}
 	}
@@ -231,6 +293,7 @@ func Suggest(options []registry.DriverState) (registry.DriverState, []registry.D
 
 			if !ds.State.Healthy {
 				ds.Rejection = fmt.Sprintf("Not healthy: %v", ds.State.Error)
+				ds.Suggestion = fmt.Sprintf("%s <%s>", ds.State.Fix, ds.State.Doc)
 				rejects = append(rejects, ds)
 				continue
 			}
@@ -239,9 +302,9 @@ func Suggest(options []registry.DriverState) (registry.DriverState, []registry.D
 			alternates = append(alternates, ds)
 		}
 	}
-	glog.Infof("Picked: %+v", pick)
-	glog.Infof("Alternatives: %+v", alternates)
-	glog.Infof("Rejects: %+v", rejects)
+	klog.Infof("Picked: %+v", pick)
+	klog.Infof("Alternatives: %+v", alternates)
+	klog.Infof("Rejects: %+v", rejects)
 	return pick, alternates, rejects
 }
 
@@ -250,23 +313,42 @@ func Status(name string) registry.DriverState {
 	d := registry.Driver(name)
 	return registry.DriverState{
 		Name:     d.Name,
+		Default:  d.Default,
 		Priority: d.Priority,
 		State:    registry.Status(name),
 	}
 }
 
+// IsAlias checks if an alias belongs to provided driver by name.
+func IsAlias(name, alias string) bool {
+	d := registry.Driver(name)
+	for _, da := range d.Alias {
+		if da == alias {
+			return true
+		}
+	}
+	return false
+}
+
 // SetLibvirtURI sets the URI to perform libvirt health checks against
 func SetLibvirtURI(v string) {
-	glog.Infof("Setting default libvirt URI to %s", v)
+	klog.Infof("Setting default libvirt URI to %s", v)
 	os.Setenv("LIBVIRT_DEFAULT_URI", v)
 
 }
 
-// MachineName returns the name of the machine, as seen by the hypervisor given the cluster and node names
-func MachineName(cc config.ClusterConfig, n config.Node) string {
-	// For single node cluster, default to back to old naming
-	if len(cc.Nodes) == 1 || n.ControlPlane {
-		return cc.Name
+// IndexFromMachineName returns the order of the container based on it is name
+func IndexFromMachineName(machineName string) int {
+	// minikube or offline-docker-20210314040449-6655 or minion-m02
+	sp := strings.Split(machineName, "-")
+	m := sp[len(sp)-1]             // minikube or 6655 or m02
+	if strings.HasPrefix(m, "m") { // likely minion node
+		m = strings.TrimPrefix(m, "m")
+		i, err := strconv.Atoi(m)
+		if err != nil {
+			return 1 // master node
+		}
+		return i // minion node
 	}
-	return fmt.Sprintf("%s-%s", cc.Name, n.Name)
+	return 1 // master node
 }

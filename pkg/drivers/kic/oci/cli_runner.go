@@ -24,11 +24,17 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
+
 	"k8s.io/minikube/pkg/minikube/out"
+	"k8s.io/minikube/pkg/minikube/style"
 )
+
+var warnLock sync.Mutex
+var alreadyWarnedCmds = make(map[string]bool)
 
 // RunResult holds the results of a Runner
 type RunResult struct {
@@ -100,13 +106,13 @@ func runCmd(cmd *exec.Cmd, warnSlow ...bool) (*RunResult, error) {
 
 	if warn { // convert exec.Command to with context
 		cmdWithCtx := exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
-		cmdWithCtx.Stdout = cmd.Stdout //copying the original command
+		cmdWithCtx.Stdout = cmd.Stdout // copying the original command
 		cmdWithCtx.Stderr = cmd.Stderr
 		cmd = cmdWithCtx
 	}
 
 	rr := &RunResult{Args: cmd.Args}
-	glog.Infof("Run: %v", rr.Command())
+	klog.Infof("Run: %v", rr.Command())
 
 	var outb, errb io.Writer
 	if cmd.Stdout == nil {
@@ -131,10 +137,19 @@ func runCmd(cmd *exec.Cmd, warnSlow ...bool) (*RunResult, error) {
 	elapsed := time.Since(start)
 	if warn {
 		if elapsed > warnTime {
-			out.WarningT(`Executing "{{.command}}" took an unusually long time: {{.duration}}`, out.V{"command": rr.Command(), "duration": elapsed})
-			// Don't show any restarting hint, when running podman locally (on linux, with sudo). Only when having a service.
-			if cmd.Args[0] != "sudo" {
-				out.ErrT(out.Tip, `Restarting the {{.name}} service may improve performance.`, out.V{"name": cmd.Args[0]})
+			warnLock.Lock()
+			_, ok := alreadyWarnedCmds[rr.Command()]
+			if !ok {
+				alreadyWarnedCmds[rr.Command()] = true
+			}
+			warnLock.Unlock()
+
+			if !ok {
+				out.WarningT(`Executing "{{.command}}" took an unusually long time: {{.duration}}`, out.V{"command": rr.Command(), "duration": elapsed})
+				// Don't show any restarting hint, when running podman locally (on linux, with sudo). Only when having a service.
+				if cmd.Args[0] != "sudo" {
+					out.ErrT(style.Tip, `Restarting the {{.name}} service may improve performance.`, out.V{"name": cmd.Args[0]})
+				}
 			}
 		}
 
@@ -143,12 +158,14 @@ func runCmd(cmd *exec.Cmd, warnSlow ...bool) (*RunResult, error) {
 		}
 	}
 
-	if exitError, ok := err.(*exec.ExitError); ok {
-		rr.ExitCode = exitError.ExitCode()
+	if ex, ok := err.(*exec.ExitError); ok {
+		klog.Warningf("%s returned with exit code %d", rr.Command(), ex.ExitCode())
+		rr.ExitCode = ex.ExitCode()
 	}
+
 	// Decrease log spam
 	if elapsed > (1 * time.Second) {
-		glog.Infof("Completed: %s: (%s)", rr.Command(), elapsed)
+		klog.Infof("Completed: %s: (%s)", rr.Command(), elapsed)
 	}
 	if err == nil {
 		return rr, nil
