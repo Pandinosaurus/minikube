@@ -57,7 +57,6 @@ const (
 func TestMain(m *testing.M) {
 	flag.Parse()
 	setMaxParallelism()
-
 	start := time.Now()
 	code := m.Run()
 	fmt.Printf("Tests completed in %s (result code %d)\n", time.Since(start), code)
@@ -83,9 +82,20 @@ func setMaxParallelism() {
 
 	maxp := runtime.GOMAXPROCS(0)
 
-	// Do not ignore what the user has explicitly set
-	if requested != maxp {
-		fmt.Fprintf(os.Stderr, "--test-parallel=%d was set via flags (system has %d cores)\n", requested, maxp)
+	// Do not ignore what the user has explicitly set. Go defaults -test.parallel
+	// to GOMAXPROCS, so comparing to core count cannot detect an explicit value.
+	explicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "test.parallel" {
+			explicit = true
+		}
+	})
+	if explicit {
+		if requested < 1 {
+			fmt.Fprintf(os.Stderr, "invalid --test.parallel=%d (must be >= 1)\n", requested)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "--test.parallel=%d was set via flags (system has %d cores)\n", requested, maxp)
 		return
 	}
 
@@ -97,14 +107,9 @@ func setMaxParallelism() {
 	// Each "minikube start" consumes up to 2 cores, though the average usage is somewhat lower
 	limit := int(math.Floor(float64(maxp) / 1.75))
 
-	// Windows and MacOS tests were failing from timeouts due to too much parallelism
+	// Windows tests were failing from timeouts due to too much parallelism
 	if runtime.GOOS == "windows" {
 		limit /= 2
-	}
-
-	// Hardcode limit to 2 for macOS
-	if runtime.GOOS == "darwin" {
-		limit = 2
 	}
 
 	fmt.Fprintf(os.Stderr, "Found %d cores, limiting parallelism with --test.parallel=%d\n", maxp, limit)
@@ -119,6 +124,17 @@ func StartArgs() []string {
 	return strings.Split(*startArgs, " ")
 }
 
+type ContextKey string
+
+func StartArgsWithContext(ctx context.Context) []string {
+	res := strings.Split(*startArgs, " ")
+	value := ctx.Value(ContextKey("k8sVersion"))
+	if value != nil && value != "" {
+		res = append(res, fmt.Sprintf("--kubernetes-version=%s", value))
+	}
+	return res
+}
+
 // Target returns where the minikube binary can be found
 func Target() string {
 	return *binaryPath
@@ -126,27 +142,37 @@ func Target() string {
 
 // NoneDriver returns whether or not this test is using the none driver
 func NoneDriver() bool {
-	return strings.Contains(*startArgs, "--driver=none") || strings.Contains(*startArgs, "--vm-driver=none")
+	return matchDriverFlag("none")
 }
 
 // HyperVDriver returns whether or not this test is using the Hyper-V driver
 func HyperVDriver() bool {
-	return strings.Contains(*startArgs, "--driver=hyperv") || strings.Contains(*startArgs, "--vm-driver=hyperv")
+	return matchDriverFlag("hyperv")
+}
+
+// KVM returns true is is KVM driver
+func KVMDriver() bool {
+	return matchDriverFlag("kvm", "kvm2")
 }
 
 // VirtualboxDriver returns whether or not this test is using the VirtualBox driver
 func VirtualboxDriver() bool {
-	return strings.Contains(*startArgs, "--driver=virtualbox") || strings.Contains(*startArgs, "--vm-driver=virtualbox")
+	return matchDriverFlag("virtualbox")
 }
 
 // DockerDriver returns whether or not this test is using the docker or podman driver
 func DockerDriver() bool {
-	return strings.Contains(*startArgs, "--driver=docker") || strings.Contains(*startArgs, "--vm-driver=docker")
+	return matchDriverFlag("docker")
 }
 
 // PodmanDriver returns whether or not this test is using the docker or podman driver
 func PodmanDriver() bool {
-	return strings.Contains(*startArgs, "--vm-driver=podman") || strings.Contains(*startArgs, "driver=podman")
+	return matchDriverFlag("podman")
+}
+
+// RootlessDriver returns whether or not this test is using the rootless KIC driver
+func RootlessDriver() bool {
+	return strings.Contains(*startArgs, "--rootless")
 }
 
 // KicDriver returns whether or not this test is using the docker or podman driver
@@ -154,7 +180,16 @@ func KicDriver() bool {
 	return DockerDriver() || PodmanDriver()
 }
 
-// ContainerRuntime returns the name of a specific container runtime if it was specified
+// VMDriver checks if the driver is a VM
+func VMDriver() bool {
+	return !KicDriver() && !NoneDriver()
+}
+func VFKitDriver() bool {
+	return matchDriverFlag("vfkit")
+}
+
+// ContainerRuntime returns the name of a specific container runtime if it was specified.
+// When the flag is omitted, this copies cmd.defaultRuntime; keep them in sync.
 func ContainerRuntime() string {
 	flag := "--container-runtime="
 	for _, s := range StartArgs() {
@@ -162,13 +197,7 @@ func ContainerRuntime() string {
 			return strings.TrimPrefix(s, flag)
 		}
 	}
-	return constants.DefaultContainerRuntime
-}
-
-// GithubActionRunner returns true if running inside a github action runner
-func GithubActionRunner() bool {
-	// based on https://help.github.com/en/actions/configuring-and-managing-workflows/using-environment-variables
-	return os.Getenv("GITHUB_ACTIONS") == "true"
+	return constants.Containerd
 }
 
 // arm64Platform returns true if running on arm64/* platform
@@ -176,10 +205,15 @@ func arm64Platform() bool {
 	return runtime.GOARCH == "arm64"
 }
 
+// amd64Platform returns true if running on amd64/* platform
+func amd64Platform() bool {
+	return runtime.GOARCH == "amd64"
+}
+
 // NeedsPortForward returns access to endpoints with this driver needs port forwarding
-// (Docker on non-Linux platforms requires ports to be forwarded to 127.0.0.1)
+// (Docker on non-Linux platforms and rootless KIC requires ports to be forwarded to 127.0.0.1)
 func NeedsPortForward() bool {
-	return KicDriver() && (runtime.GOOS == "windows" || runtime.GOOS == "darwin") || detect.IsMicrosoftWSL()
+	return KicDriver() && (runtime.GOOS == "windows" || runtime.GOOS == "darwin") || detect.IsMicrosoftWSL() || RootlessDriver()
 }
 
 // CanCleanup returns if cleanup is allowed
@@ -192,12 +226,24 @@ func Minutes(n int) time.Duration {
 	return time.Duration(*timeOutMultiplier) * time.Duration(n) * time.Minute
 }
 
-// Seconds will return timeout in minutes based on how slow the machine is
+// Seconds will return timeout in seconds based on how slow the machine is
 func Seconds(n int) time.Duration {
 	return time.Duration(*timeOutMultiplier) * time.Duration(n) * time.Second
 }
 
-// TestingKicBaseImage will return true if the integraiton test is running against a passed --base-image flag
+// TestingKicBaseImage will return true if the integration test is running against a passed --base-image flag
 func TestingKicBaseImage() bool {
 	return strings.Contains(*startArgs, "base-image")
+}
+
+func matchDriverFlag(names ...string) bool {
+	args := *startArgs
+	for _, name := range names {
+		for _, prefix := range []string{"--driver=", "--vm-driver="} {
+			if strings.Contains(args, prefix+name) {
+				return true
+			}
+		}
+	}
+	return false
 }
